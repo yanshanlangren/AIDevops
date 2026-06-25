@@ -1,0 +1,80 @@
+{
+  "incident_id": "INC-DEMO-000001",
+  "system_name": "historical-query-demo",
+  "service_name": "historical-data-query-service",
+  "environment": "demo",
+  "affected_version": "v1.0.0",
+  "error_fingerprint": "query-empty-result-after-release",
+  "trigger_source": [
+    "api"
+  ],
+  "first_seen_time": "2026-06-01T10:15:00",
+  "last_seen_time": "2026-06-01T10:30:00",
+  "trace_ids": [
+    "trace-demo-001"
+  ],
+  "log_summary": {
+    "exception": "QueryResultEmptyException",
+    "class": "QueryService",
+    "method": "queryByCondition",
+    "message": "query returns empty after new field added",
+    "raw_log_removed": true
+  },
+  "metrics_snapshot": {
+    "error_rate": "increased",
+    "query_empty_result_ratio": "increased",
+    "latency_status": "normal"
+  },
+  "runtime_context": {
+    "environment": "demo",
+    "pod_restart": false,
+    "resource_pressure": false
+  },
+  "release_context": {
+    "recent_release": true,
+    "release_batch": "REL-DEMO-001"
+  },
+  "recent_commits": [
+    {
+      "commit": "demo-commit-001",
+      "files": [
+        "src/main/java/demo/query/QueryService.java",
+        "src/main/java/demo/query/DomainRowkey.java",
+        "src/main/java/demo/query/QueryHelper.java"
+      ]
+    }
+  ],
+  "dependency_context": {
+    "search_engine_status": "normal",
+    "storage_status": "normal"
+  },
+  "data_access_context": {
+    "access_pattern": "index_then_fetch",
+    "query_condition_changed": true,
+    "empty_result_ratio": "increased",
+    "data_hit_status": "abnormal"
+  },
+  "business_context": {
+    "query_success_rate": "decreased",
+    "affected_callers": "partial",
+    "business_impact": "medium"
+  },
+  "scenario_context": {
+    "scenario_type": "historical_data_query",
+    "key_build_rule_changed": true,
+    "index_hit_then_storage_empty": true,
+    "historical_field_compatibility_risk": true
+  },
+  "suspected_components": [
+    "QueryService",
+    "DomainRowkey",
+    "QueryHelper"
+  ],
+  "suspected_type": "code_defect",
+  "problem_type": "query_condition_convert",
+  "risk_level": "medium",
+  "confidence": 0.78,
+  "auto_pr_allowed": true,
+  "production_release_allowed": false,
+  "audit_id": "AUDIT-DEMO-000001"
+}

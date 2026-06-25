@@ -1,0 +1,98 @@
+spring:
+  main:
+    banner-mode: "off"
+
+server:
+  port: 8080
+
+logging:
+  level:
+    root: INFO
+    org.eclipse.jgit: WARN
+
+app:
+  name: ai-devops-pr-demo
+  audit-dir: ./audit
+  dry-run: true
+
+repo:
+  local-base-dir: ./workspace/repos
+  target-repo-name: ${GITHUB_REPO:historical-query-demo}
+  clone-url: ${GITHUB_CLONE_URL:https://github.com/OWNER/REPO.git}
+  default-branch: main
+  working-branch-prefix: ai-devops
+
+execution:
+  build-command: "mvn -q -DskipTests compile"
+  test-command: "mvn -q test"
+  static-check-command: ""
+  timeout-seconds: 300
+
+output:
+  create-pull-request: true
+  write-manual-report-on-failure: true
+
+github:
+  api-base-url: https://api.github.com
+  web-base-url: https://github.com
+  owner: ${GITHUB_OWNER:OWNER}
+  repo: ${GITHUB_REPO:REPO}
+  token-env: GITHUB_TOKEN
+  title-prefix: "[AI-DEVOPS]"
+  target-branch: main
+  draft: false
+  reviewers: []
+  user-name: ai-devops-bot
+  user-email: ai-devops-bot@example.com
+  labels:
+    - ai-devops
+    - demo
+
+model:
+  provider: openai-compatible
+  api-base-url: ${LLM_API_BASE_URL:https://api.example.com/v1}
+  api-key-env: LLM_API_KEY
+  model-name: ${LLM_MODEL_NAME:gpt-like-model}
+  temperature: 0.1
+  max-tokens: 6000
+  timeout-seconds: 120
+  max-attempts: 2
+  max-input-chars: 120000
+  max-file-chars: 20000
+  max-files: 20
+
+policy:
+  min-confidence: 0.75
+  allowed-risk-levels:
+    - low
+    - medium
+  allowed-problem-types:
+    - input_compatibility
+    - field_mapping
+    - query_condition_convert
+    - data_access_path
+    - historical_format_compatibility
+    - pagination_sorting
+  forbidden-problem-types:
+    - permission_filter
+    - sensitive_field_display
+    - production_config_change
+    - fund_account
+    - authentication
+    - risk_control
+  path-whitelist:
+    - src/main/java/
+    - src/test/java/
+    - pom.xml
+  path-blacklist:
+    - .github/workflows/
+    - config/prod/
+    - secrets/
+    - deploy/prod/
+    - src/main/resources/application-prod.yml
+  max-changed-files: 8
+  max-diff-lines: 500
+  require-tests: true
+  test-path-prefix: src/test/java/
+  block-secrets-in-diff: true
+  block-production-config-edit: true

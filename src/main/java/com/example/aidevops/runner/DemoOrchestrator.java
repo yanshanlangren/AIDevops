@@ -1,0 +1,313 @@
+package com.example.aidevops.runner;
+
+import com.example.aidevops.audit.AuditService;
+import com.example.aidevops.audit.AuditSession;
+import com.example.aidevops.config.AppProperties;
+import com.example.aidevops.config.GithubProperties;
+import com.example.aidevops.config.ModelProperties;
+import com.example.aidevops.config.OutputProperties;
+import com.example.aidevops.config.PolicyProperties;
+import com.example.aidevops.github.GithubPullRequestClient;
+import com.example.aidevops.github.PullRequestBodyBuilder;
+import com.example.aidevops.llm.LlmGateway;
+import com.example.aidevops.llm.PromptBuilder;
+import com.example.aidevops.model.AdmissionResult;
+import com.example.aidevops.model.DemoResult;
+import com.example.aidevops.model.IncidentContext;
+import com.example.aidevops.model.LlmPlan;
+import com.example.aidevops.model.PatchValidationResult;
+import com.example.aidevops.model.PrResult;
+import com.example.aidevops.model.RetrievalResult;
+import com.example.aidevops.model.VerificationResult;
+import com.example.aidevops.patch.PatchService;
+import com.example.aidevops.policy.AdmissionService;
+import com.example.aidevops.repo.RepoManager;
+import com.example.aidevops.repo.RepoWorkspace;
+import com.example.aidevops.report.ManualReportService;
+import com.example.aidevops.retriever.CodeRetriever;
+import com.example.aidevops.security.SecretRedactor;
+import com.example.aidevops.testexec.TestRunner;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import org.springframework.stereotype.Service;
+
+@Service
+public class DemoOrchestrator {
+    private final AdmissionService admissionService;
+    private final AuditService auditService;
+    private final RepoManager repoManager;
+    private final CodeRetriever codeRetriever;
+    private final PromptBuilder promptBuilder;
+    private final LlmGateway llmGateway;
+    private final PatchService patchService;
+    private final TestRunner testRunner;
+    private final ManualReportService manualReportService;
+    private final PullRequestBodyBuilder prBodyBuilder;
+    private final GithubPullRequestClient githubClient;
+    private final OutputProperties output;
+    private final GithubProperties github;
+    private final ModelProperties model;
+    private final PolicyProperties policy;
+    private final AppProperties app;
+    private final ObjectMapper mapper;
+    private final SecretRedactor redactor;
+
+    public DemoOrchestrator(AdmissionService admissionService,
+                            AuditService auditService,
+                            RepoManager repoManager,
+                            CodeRetriever codeRetriever,
+                            PromptBuilder promptBuilder,
+                            LlmGateway llmGateway,
+                            PatchService patchService,
+                            TestRunner testRunner,
+                            ManualReportService manualReportService,
+                            PullRequestBodyBuilder prBodyBuilder,
+                            GithubPullRequestClient githubClient,
+                            OutputProperties output,
+                            GithubProperties github,
+                            ModelProperties model,
+                            PolicyProperties policy,
+                            AppProperties app,
+                            ObjectMapper mapper,
+                            SecretRedactor redactor) {
+        this.admissionService = admissionService;
+        this.auditService = auditService;
+        this.repoManager = repoManager;
+        this.codeRetriever = codeRetriever;
+        this.promptBuilder = promptBuilder;
+        this.llmGateway = llmGateway;
+        this.patchService = patchService;
+        this.testRunner = testRunner;
+        this.manualReportService = manualReportService;
+        this.prBodyBuilder = prBodyBuilder;
+        this.githubClient = githubClient;
+        this.output = output;
+        this.github = github;
+        this.model = model;
+        this.policy = policy;
+        this.app = app;
+        this.mapper = mapper;
+        this.redactor = redactor;
+    }
+
+    public DemoResult analyze(IncidentContext incident) {
+        return execute("diagnose", incident, Boolean.TRUE);
+    }
+
+    public DemoResult generatePullRequest(IncidentContext incident, Boolean dryRunOverride) {
+        return execute("run", incident, dryRunOverride);
+    }
+
+    private DemoResult execute(String mode, IncidentContext incident, Boolean dryRunOverride) {
+        validateRequest(incident);
+        String taskId = UUID.randomUUID().toString();
+        AuditSession audit = auditService.start(incident.getIncidentId(), taskId);
+        Instant start = Instant.now();
+        audit.writeJson("incident-context.json", redacted(incident));
+
+        AdmissionResult admission = admissionService.evaluate(incident);
+        audit.writeJson("admission-result.json", admission);
+        if ("run".equals(mode) && !admission.isAdmitted()) {
+            manualReportService.write(audit, incident, "L3 admission", admission.getBlockedReasons(), null);
+            return finish(audit, incident, taskId, start, "DOWNGRADED", "L3 admission",
+                    "Incident was downgraded to L2", null, null);
+        }
+
+        try (RepoWorkspace workspace = repoManager.prepare(incident, taskId)) {
+            RetrievalResult retrieval = codeRetriever.retrieve(workspace.getDirectory(), incident);
+            audit.writeJson("retrieval-result.json", redacted(retrieval));
+            if (retrieval.getTargetFiles().isEmpty()) {
+                return downgrade(audit, incident, taskId, start, "code retrieval",
+                        list("no related code files were found"), null);
+            }
+
+            String prompt = promptBuilder.build(incident, retrieval);
+            audit.writeText("prompt.txt", prompt);
+            LlmPlan plan = llmGateway.generate(prompt);
+            audit.writeJson("llm-output.json", redacted(plan));
+
+            if ("diagnose".equals(mode)) {
+                writeDiagnosis(audit, incident, plan);
+                return finish(audit, incident, taskId, start, "DIAGNOSED", "diagnosis",
+                        "Diagnosis and change plan generated; repository was not modified", null, plan);
+            }
+
+            if (plan.getConfidence() == null || plan.getConfidence() < policy.getMinConfidence()) {
+                return downgrade(audit, incident, taskId, start, "model confidence",
+                        list("model confidence below threshold " + policy.getMinConfidence()), plan);
+            }
+
+            List<String> modelGuardReasons = validateModelGuard(plan);
+            if (!modelGuardReasons.isEmpty()) {
+                return downgrade(audit, incident, taskId, start, "model policy", modelGuardReasons, plan);
+            }
+
+            PatchValidationResult preflight = patchService.preflight(plan.getUnifiedDiff());
+            audit.writeJson("patch-preflight.json", preflight);
+            audit.writeText("patch.diff", redactor.redactText(
+                    plan.getUnifiedDiff() == null ? "" : plan.getUnifiedDiff()));
+            if (!preflight.isValid()) {
+                return downgrade(audit, incident, taskId, start, "patch preflight",
+                        preflight.getBlockedReasons(), plan);
+            }
+            try {
+                patchService.apply(workspace, plan.getUnifiedDiff());
+            } catch (RuntimeException e) {
+                return downgrade(audit, incident, taskId, start, "patch apply", list(e.getMessage()), plan);
+            }
+
+            PatchValidationResult patchValidation = patchService.validate(workspace, plan.getUnifiedDiff());
+            audit.writeJson("patch-validation.json", patchValidation);
+            audit.writeText("applied.diff", patchService.currentDiff(workspace));
+            if (!patchValidation.isValid()) {
+                return downgrade(audit, incident, taskId, start, "patch policy",
+                        patchValidation.getBlockedReasons(), plan);
+            }
+
+            VerificationResult verification = testRunner.verify(workspace.getDirectory(), audit);
+            audit.writeJson("test-result.json", verification);
+            if (!verification.isSuccess()) {
+                return downgrade(audit, incident, taskId, start, "engineering verification",
+                        list(verification.getFailureReason()), plan);
+            }
+            PatchValidationResult postTestValidation = patchService.validate(workspace, plan.getUnifiedDiff());
+            audit.writeJson("post-test-patch-validation.json", postTestValidation);
+            if (!postTestValidation.isValid()
+                    || !sameFiles(patchValidation.getChangedFiles(), postTestValidation.getChangedFiles())) {
+                List<String> reasons = new ArrayList<String>(postTestValidation.getBlockedReasons());
+                if (!sameFiles(patchValidation.getChangedFiles(), postTestValidation.getChangedFiles())) {
+                    reasons.add("test execution changed files outside the approved patch set");
+                }
+                return downgrade(audit, incident, taskId, start, "post-test patch policy", reasons, plan);
+            }
+
+            boolean dryRun = dryRunOverride == null ? app.isDryRun() : dryRunOverride.booleanValue();
+            PrResult prResult = new PrResult();
+            prResult.setBranch(workspace.getBranch());
+            if (dryRun || !output.isCreatePullRequest()) {
+                prResult.setSkipped(true);
+                prResult.setMessage(dryRun
+                        ? "Dry-run completed; branch was not pushed and PR was not created"
+                        : "Pull request creation is disabled by configuration");
+            } else {
+                String commit = repoManager.commit(workspace, incident, patchValidation.getChangedFiles());
+                repoManager.push(workspace);
+                String title = github.getTitlePrefix() + "[" + incident.getIncidentId()
+                        + "] Fix " + incident.getErrorFingerprint();
+                String body = prBodyBuilder.build(incident, plan, patchValidation, verification, audit);
+                prResult = githubClient.create(workspace.getBranch(), title, body);
+                prResult.setCommit(commit);
+            }
+            audit.writeJson("pr-result.json", prResult);
+            String status = prResult.isCreated() ? "PR_CREATED" : "DRY_RUN_COMPLETE";
+            String message = prResult.getMessage();
+            return finish(audit, incident, taskId, start, status, "completed",
+                    message, prResult.getUrl(), plan);
+        }
+    }
+
+    private DemoResult downgrade(AuditSession audit, IncidentContext incident, String taskId, Instant start,
+                                 String stage, List<String> reasons, LlmPlan plan) {
+        if (output.isWriteManualReportOnFailure()) {
+            manualReportService.write(audit, incident, stage, reasons, plan);
+        }
+        return finish(audit, incident, taskId, start, "DOWNGRADED", stage,
+                reasons == null || reasons.isEmpty() ? "Automatic PR stopped" : reasons.get(0), null, plan);
+    }
+
+    private DemoResult finish(AuditSession audit, IncidentContext incident, String taskId, Instant start,
+                              String status, String stage, String message, String prUrl, LlmPlan plan) {
+        DemoResult result = new DemoResult();
+        result.setTaskId(taskId);
+        result.setIncidentId(incident.getIncidentId());
+        result.setStatus(status);
+        result.setStage(stage);
+        result.setMessage(message);
+        result.setAuditDirectory(audit.getDirectory().toString());
+        result.setPullRequestUrl(prUrl);
+        result.setAnalysis(plan);
+
+        Map<String, Object> summary = new LinkedHashMap<String, Object>();
+        summary.put("incident_id", incident.getIncidentId());
+        summary.put("task_id", taskId);
+        summary.put("start_time", start.toString());
+        summary.put("end_time", Instant.now().toString());
+        summary.put("status", status);
+        summary.put("stage", stage);
+        summary.put("message", message);
+        summary.put("model_provider", model.getProvider());
+        summary.put("model", model.getModelName());
+        summary.put("github_repo", github.getOwner() + "/" + github.getRepo());
+        summary.put("pull_request_url", prUrl);
+        audit.writeJson("audit.json", summary);
+        return result;
+    }
+
+    private void validateRequest(IncidentContext incident) {
+        if (incident == null) {
+            throw new IllegalArgumentException("IncidentContext request body is required");
+        }
+        if (incident.getIncidentId() == null || incident.getIncidentId().trim().isEmpty()) {
+            throw new IllegalArgumentException("incident_id is required");
+        }
+    }
+
+    private void writeDiagnosis(AuditSession audit, IncidentContext incident, LlmPlan plan) {
+        StringBuilder report = new StringBuilder();
+        report.append("# 诊断报告\n\n");
+        report.append("- IncidentId: ").append(incident.getIncidentId()).append('\n');
+        report.append("- Confidence: ").append(plan.getConfidence()).append("\n\n");
+        report.append("## 根因假设\n\n").append(plan.getRootCauseHypothesis()).append("\n\n");
+        report.append("## 变更计划\n\n");
+        for (String item : plan.getChangePlan()) {
+            report.append("- ").append(item).append('\n');
+        }
+        report.append("\n## 测试计划\n\n");
+        for (String item : plan.getTestPlan()) {
+            report.append("- ").append(item).append('\n');
+        }
+        audit.writeText("diagnosis_report.md", report.toString());
+    }
+
+    private JsonNode redacted(Object value) {
+        return redactor.redact(mapper.valueToTree(value));
+    }
+
+    private List<String> list(String value) {
+        List<String> values = new ArrayList<String>();
+        values.add(value == null ? "unspecified failure" : value);
+        return values;
+    }
+
+    private List<String> validateModelGuard(LlmPlan plan) {
+        List<String> blocked = new ArrayList<String>();
+        List<String> confirmations = plan.getForbiddenActionsConfirmed();
+        requireConfirmation(confirmations, "no production release", blocked);
+        requireConfirmation(confirmations, "no auto merge", blocked);
+        requireConfirmation(confirmations, "no production config edit", blocked);
+        return blocked;
+    }
+
+    private void requireConfirmation(List<String> confirmations, String required, List<String> blocked) {
+        if (confirmations == null) {
+            blocked.add("model did not confirm forbidden action: " + required);
+            return;
+        }
+        for (String confirmation : confirmations) {
+            if (required.equalsIgnoreCase(confirmation)) {
+                return;
+            }
+        }
+        blocked.add("model did not confirm forbidden action: " + required);
+    }
+
+    private boolean sameFiles(List<String> left, List<String> right) {
+        return new java.util.HashSet<String>(left).equals(new java.util.HashSet<String>(right));
+    }
+}
