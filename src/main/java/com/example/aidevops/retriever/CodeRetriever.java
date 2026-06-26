@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -82,18 +83,22 @@ public class CodeRetriever {
             }
         }
         String content = read(file);
-        String lowerContent = content.toLowerCase(Locale.ROOT);
+        String normalizedContent = normalizeSearch(content);
         for (String keyword : keywords) {
-            if (lowerContent.contains(keyword)) {
+            if (normalizedContent.contains(keyword)) {
                 score += 5;
             }
         }
-        if (relative.startsWith("src/test/")) {
+        if (isTestSource(relative) && score > 0) {
             score += 5;
             reasons.add("related test source");
         }
         if (score > 0) {
-            candidates.add(new CandidateFile(relative, join(reasons), score, truncate(content)));
+            candidates.add(new CandidateFile(
+                    relative,
+                    join(reasons),
+                    score,
+                    extractRelevantSnippets(content, keywords, exactPaths.contains(relative))));
         }
     }
 
@@ -112,7 +117,7 @@ public class CodeRetriever {
     }
 
     private Set<String> keywords(IncidentContext incident) {
-        Set<String> values = new HashSet<String>();
+        Set<String> values = new LinkedHashSet<String>();
         if (incident.getSuspectedComponents() != null) {
             for (String value : incident.getSuspectedComponents()) {
                 addKeyword(values, value);
@@ -138,10 +143,7 @@ public class CodeRetriever {
         if (value == null) {
             return;
         }
-        String normalized = value.toLowerCase(Locale.ROOT)
-                .replace("_", "")
-                .replace("-", "")
-                .replace("service", "");
+        String normalized = normalizeSearch(value).replace("service", "");
         if (normalized.length() >= 3) {
             values.add(normalized);
         }
@@ -149,12 +151,19 @@ public class CodeRetriever {
 
     private boolean isCodeFile(String path) {
         String normalized = normalize(path);
-        return (normalized.startsWith("src/") && (normalized.endsWith(".java")
+        return ((normalized.startsWith("src/") || normalized.contains("/src/"))
+                && (normalized.endsWith(".java")
                 || normalized.endsWith(".xml")
                 || normalized.endsWith(".yml")
                 || normalized.endsWith(".yaml")
                 || normalized.endsWith(".properties")))
-                || normalized.equals("pom.xml");
+                || normalized.equals("pom.xml")
+                || normalized.endsWith("/pom.xml");
+    }
+
+    private boolean isTestSource(String path) {
+        String normalized = normalize(path);
+        return normalized.startsWith("src/test/") || normalized.contains("/src/test/");
     }
 
     private boolean isBlacklisted(String path) {
@@ -179,6 +188,74 @@ public class CodeRetriever {
             return value;
         }
         return value.substring(0, model.getMaxFileChars()) + "\n/* truncated */";
+    }
+
+    private String extractRelevantSnippets(String content, Set<String> keywords, boolean exactPath) {
+        String[] lines = content.split("\\r?\\n", -1);
+        int maxSnippets = Math.max(1, model.getMaxSnippetsPerFile());
+        Set<Integer> selectedHits = new LinkedHashSet<Integer>();
+        for (String keyword : keywords) {
+            for (int i = 0; i < lines.length; i++) {
+                String normalizedLine = normalizeSearch(lines[i]);
+                if (normalizedLine.contains(keyword)) {
+                    selectedHits.add(i);
+                    break;
+                }
+            }
+            if (selectedHits.size() >= maxSnippets) {
+                break;
+            }
+        }
+        List<Integer> hits = new ArrayList<Integer>(selectedHits);
+        Collections.sort(hits);
+
+        List<int[]> windows = new ArrayList<int[]>();
+        int context = Math.max(0, model.getSnippetContextLines());
+        for (Integer hit : hits) {
+            int start = Math.max(0, hit - context);
+            int end = Math.min(lines.length - 1, hit + context);
+            if (!windows.isEmpty() && start <= windows.get(windows.size() - 1)[1] + 1) {
+                windows.get(windows.size() - 1)[1] = Math.max(windows.get(windows.size() - 1)[1], end);
+            } else if (windows.size() < maxSnippets) {
+                windows.add(new int[]{start, end});
+            }
+            if (windows.size() >= maxSnippets
+                    && hit > windows.get(windows.size() - 1)[1]) {
+                break;
+            }
+        }
+        if (windows.isEmpty() && exactPath) {
+            windows.add(new int[]{0, Math.min(lines.length - 1, context * 2)});
+        }
+
+        StringBuilder snippet = new StringBuilder();
+        for (int[] window : windows) {
+            if (snippet.length() > 0) {
+                snippet.append("\n// ... unrelated code omitted ...\n");
+            }
+            snippet.append("// source lines ")
+                    .append(window[0] + 1)
+                    .append("-")
+                    .append(window[1] + 1)
+                    .append("\n");
+            for (int line = window[0]; line <= window[1]; line++) {
+                snippet.append(String.format(Locale.ROOT, "%5d | %s%n", line + 1, lines[line]));
+                if (snippet.length() >= model.getMaxFileChars()) {
+                    return truncate(snippet.toString());
+                }
+            }
+        }
+        if (snippet.length() == 0) {
+            return truncate(content);
+        }
+        return truncate(snippet.toString());
+    }
+
+    private String normalizeSearch(String value) {
+        return value.toLowerCase(Locale.ROOT)
+                .replace("_", "")
+                .replace("-", "")
+                .replaceAll("\\s+", "");
     }
 
     private String normalize(String value) {

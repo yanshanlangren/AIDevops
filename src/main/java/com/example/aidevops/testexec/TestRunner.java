@@ -7,11 +7,15 @@ import com.example.aidevops.model.VerificationResult;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 @Service
 public class TestRunner {
+    private static final Logger log = LoggerFactory.getLogger(TestRunner.class);
+
     private final ExecutionProperties execution;
 
     public TestRunner(ExecutionProperties execution) {
@@ -51,6 +55,7 @@ public class TestRunner {
         if (!StringUtils.hasText(command)) {
             result.setSkipped(true);
             result.setSuccess(true);
+            log.info("Engineering command skipped: stage={}", name);
             return result;
         }
 
@@ -59,6 +64,8 @@ public class TestRunner {
         long start = System.currentTimeMillis();
         Process process = null;
         try {
+            log.info("Engineering command started: stage={}, command={}, directory={}, timeoutSeconds={}",
+                    name, command, repository, execution.getTimeoutSeconds());
             ProcessBuilder builder = new ProcessBuilder("/bin/sh", "-lc", command);
             builder.directory(repository.toFile());
             builder.redirectOutput(stdout.toFile());
@@ -74,21 +81,31 @@ public class TestRunner {
                 result.setExitCode(-1);
                 result.setFailureReason("command timed out after " + execution.getTimeoutSeconds() + " seconds");
                 process.destroyForcibly();
+                log.error("Engineering command timed out: stage={}, command={}, durationMs={}",
+                        name, command, result.getDurationMs());
                 return result;
             }
             result.setExitCode(process.exitValue());
             result.setSuccess(process.exitValue() == 0);
             if (!result.isSuccess()) {
                 result.setFailureReason("command exited with code " + process.exitValue());
+                log.error("Engineering command failed: stage={}, command={}, exitCode={}, durationMs={}, stderrFile={}",
+                        name, command, result.getExitCode(), result.getDurationMs(), result.getStderrFile());
+            } else {
+                log.info("Engineering command succeeded: stage={}, command={}, durationMs={}",
+                        name, command, result.getDurationMs());
             }
             return result;
         } catch (IOException e) {
+            log.error("Cannot execute engineering command: stage={}, command={}, directory={}",
+                    name, command, repository, e);
             throw new IllegalStateException("Cannot execute test command", e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             if (process != null) {
                 process.destroyForcibly();
             }
+            log.error("Engineering command interrupted: stage={}, command={}", name, command, e);
             throw new IllegalStateException("Test execution interrupted", e);
         }
     }

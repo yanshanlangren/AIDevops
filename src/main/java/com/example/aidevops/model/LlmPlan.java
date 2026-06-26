@@ -2,6 +2,8 @@ package com.example.aidevops.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -11,15 +13,25 @@ public class LlmPlan {
     private String rootCauseHypothesis;
     private Double confidence;
     @JsonProperty("change_plan")
+    @JsonDeserialize(using = StringListDeserializer.class)
     private List<String> changePlan = new ArrayList<String>();
     @JsonProperty("target_files")
+    @JsonDeserialize(using = StringListDeserializer.class)
     private List<String> targetFiles = new ArrayList<String>();
     @JsonProperty("test_plan")
+    @JsonDeserialize(using = StringListDeserializer.class)
     private List<String> testPlan = new ArrayList<String>();
-    @JsonProperty("risk_notice")
+    @JsonProperty("risk_notes")
+    @JsonAlias("risk_notice")
+    @JsonDeserialize(using = StringListDeserializer.class)
     private List<String> riskNotice = new ArrayList<String>();
-    @JsonProperty("forbidden_actions_confirmed")
-    private List<String> forbiddenActionsConfirmed = new ArrayList<String>();
+    @JsonProperty("validation_steps")
+    @JsonDeserialize(using = StringListDeserializer.class)
+    private List<String> validationSteps = new ArrayList<String>();
+    @JsonProperty("forbidden_actions")
+    @JsonAlias("forbidden_actions_confirmed")
+    @JsonDeserialize(using = StringListDeserializer.class)
+    private List<String> forbiddenActions = new ArrayList<String>();
     @JsonProperty("unified_diff")
     private String unifiedDiff;
 
@@ -71,12 +83,20 @@ public class LlmPlan {
         this.riskNotice = riskNotice;
     }
 
-    public List<String> getForbiddenActionsConfirmed() {
-        return forbiddenActionsConfirmed;
+    public List<String> getValidationSteps() {
+        return validationSteps;
     }
 
-    public void setForbiddenActionsConfirmed(List<String> forbiddenActionsConfirmed) {
-        this.forbiddenActionsConfirmed = forbiddenActionsConfirmed;
+    public void setValidationSteps(List<String> validationSteps) {
+        this.validationSteps = validationSteps;
+    }
+
+    public List<String> getForbiddenActions() {
+        return forbiddenActions;
+    }
+
+    public void setForbiddenActions(List<String> forbiddenActions) {
+        this.forbiddenActions = forbiddenActions;
     }
 
     public String getUnifiedDiff() {

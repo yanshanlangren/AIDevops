@@ -18,11 +18,15 @@ import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.transport.CredentialsProvider;
 import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 @Service
 public class RepoManager {
+    private static final Logger log = LoggerFactory.getLogger(RepoManager.class);
+
     private final RepoProperties repo;
     private final GithubProperties github;
 
@@ -34,6 +38,8 @@ public class RepoManager {
     public RepoWorkspace prepare(IncidentContext incident, String taskId) {
         Path directory = Paths.get(repo.getLocalBaseDir()).toAbsolutePath().normalize()
                 .resolve(repo.getTargetRepoName() + "-" + safe(incident.getIncidentId()) + "-" + safe(taskId));
+        log.info("Preparing repository workspace: incidentId={}, taskId={}, repository={}, baseBranch={}, directory={}",
+                incident.getIncidentId(), taskId, repo.getTargetRepoName(), repo.getDefaultBranch(), directory);
         deleteRecursively(directory);
         try {
             Files.createDirectories(directory.getParent());
@@ -45,10 +51,14 @@ public class RepoManager {
                         "Configure repo.clone-url in application.yml before running the demo");
             }
             Git git = cloneRepository(directory);
+            log.info("Repository cloned: incidentId={}, taskId={}, directory={}",
+                    incident.getIncidentId(), taskId, directory);
             RepoWorkspace workspace = new RepoWorkspace(directory, git);
             String branch = branchName(incident);
             git.checkout().setCreateBranch(true).setName(branch).call();
             workspace.setBranch(branch);
+            log.info("Working branch created: incidentId={}, taskId={}, branch={}",
+                    incident.getIncidentId(), taskId, branch);
             return workspace;
         } catch (IOException e) {
             throw new IllegalStateException("Cannot prepare repository workspace " + directory, e);
@@ -70,6 +80,8 @@ public class RepoManager {
                     .setAuthor(github.getUserName(), github.getUserEmail())
                     .call()
                     .getId();
+            log.info("Repository changes committed: incidentId={}, branch={}, commit={}, files={}",
+                    incident.getIncidentId(), workspace.getBranch(), id.name(), approvedFiles.size());
             return id.name();
         } catch (GitAPIException e) {
             throw new IllegalStateException("Cannot commit generated change", e);
@@ -82,12 +94,14 @@ public class RepoManager {
             throw new IllegalStateException("Missing GitHub token environment variable: " + github.getTokenEnv());
         }
         try {
+            log.info("Pushing repository branch: branch={}", workspace.getBranch());
             workspace.getGit().push()
                     .setRemote("origin")
                     .setCredentialsProvider(credentials(token))
                     .setRefSpecs(new RefSpec("refs/heads/" + workspace.getBranch()
                             + ":refs/heads/" + workspace.getBranch()))
                     .call();
+            log.info("Repository branch pushed: branch={}", workspace.getBranch());
         } catch (GitAPIException e) {
             throw new IllegalStateException("Cannot push branch " + workspace.getBranch(), e);
         }

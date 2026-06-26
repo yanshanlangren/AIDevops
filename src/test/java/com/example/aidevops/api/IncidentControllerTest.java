@@ -1,8 +1,11 @@
 package com.example.aidevops.api;
 
-import com.example.aidevops.model.DemoResult;
-import com.example.aidevops.model.IncidentContext;
-import com.example.aidevops.runner.DemoOrchestrator;
+import com.example.aidevops.task.IncidentTaskService;
+import com.example.aidevops.task.TaskNotFoundException;
+import com.example.aidevops.task.TaskRecord;
+import com.example.aidevops.task.TaskStatus;
+import com.example.aidevops.task.TaskSubmission;
+import com.example.aidevops.task.TaskType;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -14,45 +17,70 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(IncidentController.class)
+@WebMvcTest({IncidentController.class, TaskController.class})
 class IncidentControllerTest {
     @Autowired
     private MockMvc mockMvc;
 
     @MockBean
-    private DemoOrchestrator orchestrator;
+    private IncidentTaskService taskService;
 
     @Test
-    void analyzesIncidentContextFromJsonBody() throws Exception {
-        DemoResult result = result("DIAGNOSED");
-        when(orchestrator.analyze(any(IncidentContext.class))).thenReturn(result);
+    void submitsAnalysisAsAsynchronousTask() throws Exception {
+        TaskSubmission submission = submission("task-analysis");
+        when(taskService.submitAnalysis(any())).thenReturn(submission);
 
         mockMvc.perform(post("/api/v1/incidents/analyze")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"incident_id\":\"INC-API-1\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.incidentId").value("INC-API-1"))
-                .andExpect(jsonPath("$.status").value("DIAGNOSED"));
+                .andExpect(status().isAccepted())
+                .andExpect(header().string("Location", "/api/v1/tasks/task-analysis"))
+                .andExpect(jsonPath("$.taskId").value("task-analysis"))
+                .andExpect(jsonPath("$.status").value("QUEUED"));
 
-        verify(orchestrator).analyze(any(IncidentContext.class));
+        verify(taskService).submitAnalysis(any());
     }
 
     @Test
-    void triggersPullRequestFlowWithDryRunQueryParameter() throws Exception {
-        DemoResult result = result("DRY_RUN_COMPLETE");
-        when(orchestrator.generatePullRequest(any(IncidentContext.class), eq(Boolean.TRUE))).thenReturn(result);
+    void submitsPullRequestAsAsynchronousTask() throws Exception {
+        TaskSubmission submission = submission("task-pr");
+        when(taskService.submitPullRequest(any(), eq(Boolean.TRUE))).thenReturn(submission);
 
         mockMvc.perform(post("/api/v1/incidents/pull-requests?dryRun=true")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"incident_id\":\"INC-API-1\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("DRY_RUN_COMPLETE"));
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.taskId").value("task-pr"))
+                .andExpect(jsonPath("$.status").value("QUEUED"));
 
-        verify(orchestrator).generatePullRequest(any(IncidentContext.class), eq(Boolean.TRUE));
+        verify(taskService).submitPullRequest(any(), eq(Boolean.TRUE));
+    }
+
+    @Test
+    void returnsTaskStatus() throws Exception {
+        TaskRecord task = new TaskRecord("task-1", "INC-API-1", TaskType.ANALYZE);
+        task.markRunning();
+        when(taskService.get("task-1")).thenReturn(task);
+
+        mockMvc.perform(get("/api/v1/tasks/task-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId").value("task-1"))
+                .andExpect(jsonPath("$.status").value("RUNNING"));
+    }
+
+    @Test
+    void returnsNotFoundForUnknownTask() throws Exception {
+        when(taskService.get("missing")).thenThrow(new TaskNotFoundException("missing"));
+
+        mockMvc.perform(get("/api/v1/tasks/missing"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404));
     }
 
     @Test
@@ -64,11 +92,24 @@ class IncidentControllerTest {
                 .andExpect(jsonPath("$.status").value(400));
     }
 
-    private DemoResult result(String status) {
-        DemoResult result = new DemoResult();
-        result.setTaskId("task-1");
-        result.setIncidentId("INC-API-1");
-        result.setStatus(status);
-        return result;
+    @Test
+    void returnsInternalServerErrorWhenTaskSubmissionFails() throws Exception {
+        when(taskService.submitAnalysis(any()))
+                .thenThrow(new IllegalStateException("Incident task queue is full"));
+
+        mockMvc.perform(post("/api/v1/incidents/analyze")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"incident_id\":\"INC-API-1\"}"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.status").value(500))
+                .andExpect(jsonPath("$.message").value("Incident task queue is full"));
+    }
+
+    private TaskSubmission submission(String taskId) {
+        return new TaskSubmission(
+                taskId,
+                "INC-API-1",
+                TaskStatus.QUEUED,
+                "/api/v1/tasks/" + taskId);
     }
 }

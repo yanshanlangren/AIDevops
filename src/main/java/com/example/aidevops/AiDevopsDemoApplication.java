@@ -7,6 +7,7 @@ import com.example.aidevops.config.ModelProperties;
 import com.example.aidevops.config.OutputProperties;
 import com.example.aidevops.config.PolicyProperties;
 import com.example.aidevops.config.RepoProperties;
+import com.example.aidevops.config.TaskProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -19,7 +20,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         OutputProperties.class,
         GithubProperties.class,
         ModelProperties.class,
-        PolicyProperties.class
+        PolicyProperties.class,
+        TaskProperties.class
 })
 public class AiDevopsDemoApplication {
 

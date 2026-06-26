@@ -15,6 +15,8 @@ public class ModelProperties {
     private int maxInputChars = 120000;
     private int maxFileChars = 20000;
     private int maxFiles = 20;
+    private int snippetContextLines = 60;
+    private int maxSnippetsPerFile = 3;
 
     public String getProvider() {
         return provider;
@@ -102,5 +104,21 @@ public class ModelProperties {
 
     public void setMaxFiles(int maxFiles) {
         this.maxFiles = maxFiles;
+    }
+
+    public int getSnippetContextLines() {
+        return snippetContextLines;
+    }
+
+    public void setSnippetContextLines(int snippetContextLines) {
+        this.snippetContextLines = snippetContextLines;
+    }
+
+    public int getMaxSnippetsPerFile() {
+        return maxSnippetsPerFile;
+    }
+
+    public void setMaxSnippetsPerFile(int maxSnippetsPerFile) {
+        this.maxSnippetsPerFile = maxSnippetsPerFile;
     }
 }

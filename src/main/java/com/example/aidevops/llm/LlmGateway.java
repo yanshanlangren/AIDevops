@@ -9,6 +9,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -21,6 +23,8 @@ import org.springframework.web.client.RestTemplate;
 
 @Service
 public class LlmGateway {
+    private static final Logger log = LoggerFactory.getLogger(LlmGateway.class);
+
     private final ModelProperties model;
     private final ObjectMapper mapper;
 
@@ -31,6 +35,7 @@ public class LlmGateway {
 
     public LlmPlan generate(String prompt) {
         if (!"openai-compatible".equalsIgnoreCase(model.getProvider())) {
+            log.error("Unsupported model provider configured: provider={}", model.getProvider());
             throw new IllegalStateException("Unsupported model provider: " + model.getProvider());
         }
         return invokeOpenAiCompatible(prompt);
@@ -39,6 +44,8 @@ public class LlmGateway {
     private LlmPlan invokeOpenAiCompatible(String prompt) {
         String key = System.getenv(model.getApiKeyEnv());
         if (!StringUtils.hasText(key)) {
+            log.error("Model API key environment variable is missing: environmentVariable={}",
+                    model.getApiKeyEnv());
             throw new IllegalStateException("Missing model API key environment variable: " + model.getApiKeyEnv());
         }
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
@@ -64,6 +71,8 @@ public class LlmGateway {
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setBearerAuth(key);
         String url = stripTrailingSlash(model.getApiBaseUrl()) + "/chat/completions";
+        log.info("Model request started: provider={}, model={}, endpoint={}, maxAttempts={}",
+                model.getProvider(), model.getModelName(), url, model.getMaxAttempts());
         RuntimeException last = null;
         for (int attempt = 1; attempt <= model.getMaxAttempts(); attempt++) {
             try {
@@ -74,14 +83,19 @@ public class LlmGateway {
                     throw new IllegalStateException("Model response contains no choices");
                 }
                 String content = root.path("choices").get(0).path("message").path("content").asText();
+                log.info("Model request succeeded: model={}, attempt={}", model.getModelName(), attempt);
                 return parsePlan(content);
             } catch (RuntimeException e) {
                 last = e;
+                log.warn("Model request attempt failed: model={}, attempt={}, maxAttempts={}, message={}",
+                        model.getModelName(), attempt, model.getMaxAttempts(), e.getMessage(), e);
                 if (attempt < model.getMaxAttempts()) {
                     sleep(500L * attempt);
                 }
             }
         }
+        log.error("Model request failed after retries: model={}, maxAttempts={}",
+                model.getModelName(), model.getMaxAttempts(), last);
         throw new IllegalStateException("Model request failed after retries", last);
     }
 

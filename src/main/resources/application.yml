@@ -1,98 +1,110 @@
-spring:
-  main:
-    banner-mode: "off"
+spring: # Spring Boot 框架基础配置
+  main: # Spring Boot 应用启动行为配置
+    banner-mode: "off" # 关闭 Spring Boot 启动 Banner，减少控制台无关输出
 
-server:
-  port: 8080
+server: # 内嵌 Web 服务器配置
+  port: 8080 # HTTP 服务监听端口
 
-logging:
-  level:
-    root: INFO
-    org.eclipse.jgit: WARN
+logging: # 应用日志配置
+  level: # 各包日志级别配置
+    root: INFO # 应用默认日志级别
+    org.eclipse.jgit: WARN # JGit 日志级别，避免输出过多仓库操作细节
+    com.example.aidevops: INFO # AI DevOps 主流程、模型调用、仓库操作和异常处理日志级别
 
-app:
-  name: ai-devops-pr-demo
-  audit-dir: ./audit
-  dry-run: true
+app: # AI DevOps Demo 自身配置
+  name: ai-devops-pr-demo # 应用名称，用于标识当前 Demo 服务
+  audit-dir: ./audit # 审计文件根目录，每次请求按 IncidentId 和 TaskId 隔离
+  dry-run: true # 默认是否启用演练模式；true 时不提交、不推送且不创建 PR
 
-repo:
-  local-base-dir: ./workspace/repos
-  target-repo-name: ${GITHUB_REPO:historical-query-demo}
-  clone-url: ${GITHUB_CLONE_URL:https://github.com/OWNER/REPO.git}
-  default-branch: main
-  working-branch-prefix: ai-devops
+tasks: # IncidentContext 异步任务线程池配置
+  core-pool-size: 2 # 常驻后台任务线程数量
+  max-pool-size: 4 # 高负载时允许创建的最大后台任务线程数量
+  queue-capacity: 50 # 等待执行的 IncidentContext 任务最大数量
+  thread-name-prefix: incident-task- # 后台任务线程名称前缀，便于日志排查
 
-execution:
-  build-command: "mvn -q -DskipTests compile"
-  test-command: "mvn -q test"
-  static-check-command: ""
-  timeout-seconds: 300
+repo: # 远端代码仓库及本地工作区配置
+  local-base-dir: /Users/elvis/Desktop/HDQS/HDQS_HMS/HDQS_HMS/hms # 远端仓库克隆后的本地临时工作区根目录
+  target-repo-name: HDQS # 目标仓库名称，用于生成本地工作目录
+  clone-url: https://github.com/yanshanlangren/HDQS.git # 目标 GitHub 仓库的 HTTPS 克隆地址
+  default-branch: main # 克隆和创建工作分支时使用的基准分支
+  working-branch-prefix: ai-devops # 自动生成的修复分支名称前缀
 
-output:
-  create-pull-request: true
-  write-manual-report-on-failure: true
+execution: # 目标仓库工程验证命令配置
+  build-command: "mvn -q -DskipTests compile" # 补丁应用后执行的编译命令；留空表示跳过
+  test-command: "mvn -q test" # 补丁应用后执行的测试命令；失败时停止 PR 流程
+  static-check-command: "" # 静态检查命令；留空表示暂不执行静态检查
+  timeout-seconds: 300 # 每个编译、测试或静态检查命令的最大执行秒数
 
-github:
-  api-base-url: https://api.github.com
-  web-base-url: https://github.com
-  owner: ${GITHUB_OWNER:OWNER}
-  repo: ${GITHUB_REPO:REPO}
-  token-env: GITHUB_TOKEN
-  title-prefix: "[AI-DEVOPS]"
-  target-branch: main
-  draft: false
-  reviewers: []
-  user-name: ai-devops-bot
-  user-email: ai-devops-bot@example.com
-  labels:
-    - ai-devops
-    - demo
+output: # 自动化流程产物输出控制
+  create-pull-request: true # 非 Dry Run 且门禁通过时是否允许创建 GitHub PR
+  write-manual-report-on-failure: true # 自动流程降级时是否输出人工分析报告
 
-model:
-  provider: openai-compatible
-  api-base-url: ${LLM_API_BASE_URL:https://api.example.com/v1}
-  api-key-env: LLM_API_KEY
-  model-name: ${LLM_MODEL_NAME:gpt-like-model}
-  temperature: 0.1
-  max-tokens: 6000
-  timeout-seconds: 120
-  max-attempts: 2
-  max-input-chars: 120000
-  max-file-chars: 20000
-  max-files: 20
+github: # GitHub API、PR 和 Git 提交身份配置
+  api-base-url: https://api.github.com # GitHub REST API 根地址，可替换为 GitHub Enterprise API 地址
+  web-base-url: https://github.com # GitHub Web 根地址，用于生成页面链接
+  owner: yanshanlangren # 目标 GitHub 仓库所属用户或组织
+  repo: https://github.com/yanshanlangren/HDQS.git # 目标仓库名，优先读取 GITHUB_REPO 环境变量
+  token-env: GITHUB_TOKEN # 存放 GitHub Token 的环境变量名称
+  title-prefix: "[AI-DEVOPS]" # 自动创建 PR 时使用的标题前缀
+  target-branch: main # Pull Request 的目标分支
+  draft: false # 是否将自动创建的 Pull Request 标记为 Draft
+  reviewers: [] # 自动请求 Review 的 GitHub 用户名列表
+  user-name: ai-devops-bot # 自动提交代码时使用的 Git Author 名称
+  user-email: ai-devops-bot@example.com # 自动提交代码时使用的 Git Author 邮箱
+  labels: # 自动添加到 Pull Request 的标签列表
+    - ai-devops # 标识由 AI DevOps 流程创建的 PR 标签
+    - demo # 标识当前 PR 来源于 Demo 流程的标签
 
-policy:
-  min-confidence: 0.75
-  allowed-risk-levels:
-    - low
-    - medium
-  allowed-problem-types:
-    - input_compatibility
-    - field_mapping
-    - query_condition_convert
-    - data_access_path
-    - historical_format_compatibility
-    - pagination_sorting
-  forbidden-problem-types:
-    - permission_filter
-    - sensitive_field_display
-    - production_config_change
-    - fund_account
-    - authentication
-    - risk_control
-  path-whitelist:
-    - src/main/java/
-    - src/test/java/
-    - pom.xml
-  path-blacklist:
-    - .github/workflows/
-    - config/prod/
-    - secrets/
-    - deploy/prod/
-    - src/main/resources/application-prod.yml
-  max-changed-files: 8
-  max-diff-lines: 500
-  require-tests: true
-  test-path-prefix: src/test/java/
-  block-secrets-in-diff: true
-  block-production-config-edit: true
+model: # OpenAI-compatible 大模型调用配置
+  provider: openai-compatible # 模型服务协议类型，当前仅支持 OpenAI-compatible
+  api-base-url: ${LLM_API_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1} # 模型 API 根地址，优先读取 LLM_API_BASE_URL
+  api-key-env: LLM_API_KEY # 存放模型 API Key 的环境变量名称
+  model-name: ${LLM_MODEL_NAME:qwen3.7-max} # 调用的模型名称，优先读取 LLM_MODEL_NAME
+  temperature: 0.1 # 模型采样温度，较低值用于提高诊断和代码输出稳定性
+  max-tokens: 60000 # 单次模型响应允许生成的最大 Token 数
+  timeout-seconds: 600 # 单次模型 HTTP 请求超时秒数
+  max-attempts: 1 # 模型调用失败后的最大尝试次数
+  max-input-chars: 60000 # 发送给模型的完整 Prompt 最大字符数
+  max-file-chars: 12000 # 单个候选代码文件片段允许进入模型上下文的最大字符数
+  max-files: 10 # 单次分析允许进入模型上下文的最大候选文件数量
+  snippet-context-lines: 60 # 每个关键词或方法命中点前后保留的源码行数
+  max-snippets-per-file: 3 # 单个文件最多提取的独立代码片段数量
+
+policy: # L3 准入、补丁范围与安全门禁配置
+  min-confidence: 0.75 # 允许进入 L3 自动创建 PR 的最低根因置信度
+  allowed-risk-levels: # 允许进入自动 PR 流程的风险等级白名单
+    - low # 允许进入自动 PR 流程的低风险等级
+    - medium # 允许进入自动 PR 流程的中风险等级
+  allowed-problem-types: # 允许进入 L3 自动变更的问题类型白名单
+    - input_compatibility # 输入参数兼容问题
+    - field_mapping # 字段映射或格式转换问题
+    - query_condition_convert # 查询条件转换问题
+    - data_access_path # 数据访问路径构造问题
+    - historical_format_compatibility # 历史数据格式兼容问题
+    - pagination_sorting # 分页或排序逻辑问题
+  forbidden-problem-types: # 明确禁止自动变更的问题类型黑名单
+    - permission_filter # 权限过滤问题，禁止自动修改
+    - sensitive_field_display # 敏感字段展示问题，禁止自动修改
+    - production_config_change # 生产配置变更，禁止自动执行
+    - fund_account # 资金或账户逻辑，禁止自动修改
+    - authentication # 认证鉴权逻辑，禁止自动修改
+    - risk_control # 风控逻辑，禁止自动修改
+  path-whitelist: # 模型补丁允许修改的仓库路径白名单
+    - src/main/java/ # 允许修改的 Java 生产源码目录
+    - src/test/java/ # 允许修改的 Java 测试源码目录
+    - pom.xml # 允许修改的 Maven 项目配置文件
+    - hms/src/main/java/ # 允许修改 HMS 模块的 Java 生产源码目录
+    - hms/src/test/java/ # 允许修改 HMS 模块的 Java 测试源码目录
+    - hms/pom.xml # 允许修改 HMS 模块的 Maven 配置文件
+  path-blacklist: # 模型补丁禁止修改的仓库路径黑名单
+    - .github/workflows/ # 禁止修改 GitHub Actions 工作流
+    - config/prod/ # 禁止修改生产环境配置目录
+    - secrets/ # 禁止修改或新增密钥目录内容
+    - deploy/prod/ # 禁止修改生产部署目录
+    - src/main/resources/application-prod.yml # 禁止修改生产环境 Spring 配置
+  max-changed-files: 8 # 单次自动补丁允许修改的最大文件数量
+  max-diff-lines: 500 # 单次自动补丁允许新增和删除的最大总行数
+  require-tests: true # 是否强制要求补丁同时新增或修改测试代码
+  test-path-prefix: src/test/java/ # 用于识别测试文件的路径前缀
+  block-secrets-in-diff: true # 是否在 Diff 中检测并阻止疑似 Token、密钥或私钥
+  block-production-config-edit: true # 是否阻止模型修改生产环境配置

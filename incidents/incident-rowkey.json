@@ -1,80 +1,117 @@
 {
-  "incident_id": "INC-DEMO-000001",
-  "system_name": "historical-query-demo",
-  "service_name": "historical-data-query-service",
+  "incident_id": "INC-HMS-ROWKEY-000001",
+  "system_name": "HDQS",
+  "service_name": "hdqs-hms",
   "environment": "demo",
-  "affected_version": "v1.0.0",
-  "error_fingerprint": "query-empty-result-after-release",
+  "affected_version": "1.0.0-SNAPSHOT",
+  "error_fingerprint": "hbase-rowkey-field-index-out-of-bounds",
   "trigger_source": [
-    "api"
+    "prebuilt_incident_context",
+    "source_code_based_demo"
   ],
-  "first_seen_time": "2026-06-01T10:15:00",
-  "last_seen_time": "2026-06-01T10:30:00",
+  "first_seen_time": "2026-06-25T14:38:11+08:00",
+  "last_seen_time": "2026-06-25T14:38:11+08:00",
   "trace_ids": [
-    "trace-demo-001"
+    "trace-demo-hms-rowkey-001"
   ],
   "log_summary": {
-    "exception": "QueryResultEmptyException",
-    "class": "QueryService",
-    "method": "queryByCondition",
-    "message": "query returns empty after new field added",
+    "synthetic": true,
+    "evidence_source": "HMS source code inspection",
+    "exception": "IndexOutOfBoundsException",
+    "class": "HBaseHao",
+    "method": "genRowKey",
+    "message": "Historical query RowKey contains fewer segments than the configured domain RowKey fields; rowkeyList.get(rowKeyField.getIndex()) may read beyond the parsed segment list.",
     "raw_log_removed": true
   },
   "metrics_snapshot": {
-    "error_rate": "increased",
-    "query_empty_result_ratio": "increased",
-    "latency_status": "normal"
+    "query_error_rate": "increased_for_historical_format_sample",
+    "query_empty_result_ratio": "not_confirmed",
+    "latency_status": "normal",
+    "sample_scope": "demo_reproduction_only"
   },
   "runtime_context": {
-    "environment": "demo",
-    "pod_restart": false,
+    "application_id": "hdqs-hms",
+    "application_name": "管理模块",
+    "server_port": 8081,
+    "context_path": "/hms",
+    "spring_profile": "local",
+    "java_version": "1.8",
     "resource_pressure": false
   },
   "release_context": {
-    "recent_release": true,
-    "release_batch": "REL-DEMO-001"
+    "recent_release": false,
+    "repository_state": "single_initial_commit",
+    "release_batch": "DEMO-SOURCE-INSPECTION"
   },
   "recent_commits": [
     {
-      "commit": "demo-commit-001",
+      "commit": "318b497be4f9258b0e19ac3c550c621ae7f15311",
       "files": [
-        "src/main/java/demo/query/QueryService.java",
-        "src/main/java/demo/query/DomainRowkey.java",
-        "src/main/java/demo/query/QueryHelper.java"
+        "hms/src/main/java/com/abchina/hdqs/hms/hao/HBaseHao.java",
+        "hms/src/main/java/com/abchina/hdqs/hms/common/xml/DomainRowkey.java",
+        "hms/src/main/java/com/abchina/hdqs/hms/common/QueryHelper.java",
+        "hms/src/test/java/com/abchina/hdqs/hms/TestHbase.java"
       ]
     }
   ],
   "dependency_context": {
-    "search_engine_status": "normal",
-    "storage_status": "normal"
+    "hbase_client_version": "2.4.14-h0.cbu.mrs.350.r26",
+    "hadoop_version": "3.3.1-h0.cbu.mrs.350.r26",
+    "hbase_cluster_status": "assumed_normal_for_demo",
+    "database_status": "not_involved",
+    "external_dependency_failure": false
   },
   "data_access_context": {
-    "access_pattern": "index_then_fetch",
-    "query_condition_changed": true,
-    "empty_result_ratio": "increased",
-    "data_hit_status": "abnormal"
+    "access_pattern": "domain_rowkey_to_hbase_get_or_scan",
+    "entry_method": "HBaseHao.findByAIR",
+    "rowkey_builder": "HBaseHao.genRowKey",
+    "domain_rowkey_builder": "DomainRowkey.getHBaseRowKey",
+    "query_mode": "single_or_multi_rowkey",
+    "input_rowkey_format": "historical_format_missing_optional_trailing_segment",
+    "configured_field_count_greater_than_input_segment_count": true,
+    "production_data_used": false
   },
   "business_context": {
-    "query_success_rate": "decreased",
-    "affected_callers": "partial",
-    "business_impact": "medium"
+    "business_capability": "historical_data_query",
+    "affected_callers": "historical_format_callers",
+    "business_impact": "medium",
+    "production_incident_confirmed": false,
+    "demo_goal": "verify safe compatibility handling and regression test generation"
   },
   "scenario_context": {
-    "scenario_type": "historical_data_query",
-    "key_build_rule_changed": true,
-    "index_hit_then_storage_empty": true,
-    "historical_field_compatibility_risk": true
+    "scenario_type": "hms_hbase_rowkey_compatibility",
+    "source_observation": "Both HBaseHao.genRowKey and DomainRowkey.getHBaseRowKey access rowkeyList by configured field index without first verifying that the parsed RowKey contains that index.",
+    "root_cause_hypothesis": "A historical request omits an optional trailing RowKey segment while the current domain definition still contains that field, causing an out-of-range list access before HBase Get or Scan execution.",
+    "reproduction_precondition": "Create a domain RowKey definition with more configured fields than the number of segments in the incoming RowKey string.",
+    "expected_before_fix": "RowKey construction throws IndexOutOfBoundsException and the query does not reach HBase.",
+    "expected_after_fix": "The request is handled by an explicit compatibility rule or a clear parameter-validation exception, without an unhandled list access.",
+    "required_tests": [
+      "complete RowKey field list remains unchanged",
+      "historical RowKey missing an optional trailing field is handled deterministically",
+      "required RowKey field missing returns a clear validation error",
+      "range and reversed query key ordering remains unchanged",
+      "multi-RowKey parsing remains unchanged"
+    ],
+    "forbidden_change_scope": [
+      "HBase production connection configuration",
+      "authentication and permission logic",
+      "production profile files",
+      "data write and batch modification logic"
+    ]
   },
   "suspected_components": [
-    "QueryService",
+    "HBaseHao",
+    "genRowKey",
+    "findByAIR",
     "DomainRowkey",
+    "getHBaseRowKey",
     "QueryHelper"
   ],
   "suspected_type": "code_defect",
-  "problem_type": "query_condition_convert",
+  "problem_type": "historical_format_compatibility",
   "risk_level": "medium",
   "confidence": 0.78,
   "auto_pr_allowed": true,
   "production_release_allowed": false,
-  "audit_id": "AUDIT-DEMO-000001"
+  "audit_id": "AUDIT-HMS-ROWKEY-000001"
 }

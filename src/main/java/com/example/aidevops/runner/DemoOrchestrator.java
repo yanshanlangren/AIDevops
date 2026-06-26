@@ -34,11 +34,14 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class DemoOrchestrator {
+    private static final Logger log = LoggerFactory.getLogger(DemoOrchestrator.class);
+
     private final AdmissionService admissionService;
     private final AuditService auditService;
     private final RepoManager repoManager;
@@ -96,23 +99,32 @@ public class DemoOrchestrator {
         this.redactor = redactor;
     }
 
-    public DemoResult analyze(IncidentContext incident) {
-        return execute("diagnose", incident, Boolean.TRUE);
+    public DemoResult analyze(IncidentContext incident, String taskId) {
+        return execute("diagnose", incident, Boolean.TRUE, taskId);
     }
 
-    public DemoResult generatePullRequest(IncidentContext incident, Boolean dryRunOverride) {
-        return execute("run", incident, dryRunOverride);
+    public DemoResult generatePullRequest(
+            IncidentContext incident, Boolean dryRunOverride, String taskId) {
+        return execute("run", incident, dryRunOverride, taskId);
     }
 
-    private DemoResult execute(String mode, IncidentContext incident, Boolean dryRunOverride) {
+    private DemoResult execute(
+            String mode, IncidentContext incident, Boolean dryRunOverride, String taskId) {
         validateRequest(incident);
-        String taskId = UUID.randomUUID().toString();
+        if (taskId == null || taskId.trim().isEmpty()) {
+            throw new IllegalArgumentException("taskId is required");
+        }
+        log.info("Incident workflow started: taskId={}, incidentId={}, mode={}, dryRunOverride={}",
+                taskId, incident.getIncidentId(), mode, dryRunOverride);
         AuditSession audit = auditService.start(incident.getIncidentId(), taskId);
         Instant start = Instant.now();
         audit.writeJson("incident-context.json", redacted(incident));
 
         AdmissionResult admission = admissionService.evaluate(incident);
         audit.writeJson("admission-result.json", admission);
+        log.info("L3 admission evaluated: taskId={}, incidentId={}, admitted={}, level={}, blockedReasons={}",
+                taskId, incident.getIncidentId(), admission.isAdmitted(),
+                admission.getLevel(), admission.getBlockedReasons().size());
         if ("run".equals(mode) && !admission.isAdmitted()) {
             manualReportService.write(audit, incident, "L3 admission", admission.getBlockedReasons(), null);
             return finish(audit, incident, taskId, start, "DOWNGRADED", "L3 admission",
@@ -120,8 +132,13 @@ public class DemoOrchestrator {
         }
 
         try (RepoWorkspace workspace = repoManager.prepare(incident, taskId)) {
+            log.info("Repository workspace prepared: taskId={}, incidentId={}, branch={}, directory={}",
+                    taskId, incident.getIncidentId(), workspace.getBranch(), workspace.getDirectory());
             RetrievalResult retrieval = codeRetriever.retrieve(workspace.getDirectory(), incident);
             audit.writeJson("retrieval-result.json", redacted(retrieval));
+            log.info("Code retrieval completed: taskId={}, incidentId={}, targetFiles={}, ignoredFiles={}",
+                    taskId, incident.getIncidentId(), retrieval.getTargetFiles().size(),
+                    retrieval.getIgnoredFiles().size());
             if (retrieval.getTargetFiles().isEmpty()) {
                 return downgrade(audit, incident, taskId, start, "code retrieval",
                         list("no related code files were found"), null);
@@ -129,8 +146,13 @@ public class DemoOrchestrator {
 
             String prompt = promptBuilder.build(incident, retrieval);
             audit.writeText("prompt.txt", prompt);
+            log.info("Calling model for diagnosis: taskId={}, incidentId={}, candidateFiles={}",
+                    taskId, incident.getIncidentId(), retrieval.getTargetFiles().size());
             LlmPlan plan = llmGateway.generate(prompt);
             audit.writeJson("llm-output.json", redacted(plan));
+            log.info("Model diagnosis completed: taskId={}, incidentId={}, confidence={}, targetFiles={}",
+                    taskId, incident.getIncidentId(), plan.getConfidence(),
+                    plan.getTargetFiles() == null ? 0 : plan.getTargetFiles().size());
 
             if ("diagnose".equals(mode)) {
                 writeDiagnosis(audit, incident, plan);
@@ -152,12 +174,16 @@ public class DemoOrchestrator {
             audit.writeJson("patch-preflight.json", preflight);
             audit.writeText("patch.diff", redactor.redactText(
                     plan.getUnifiedDiff() == null ? "" : plan.getUnifiedDiff()));
+            log.info("Patch preflight completed: taskId={}, incidentId={}, valid={}, files={}, diffLines={}",
+                    taskId, incident.getIncidentId(), preflight.isValid(),
+                    preflight.getChangedFiles().size(), preflight.getDiffLines());
             if (!preflight.isValid()) {
                 return downgrade(audit, incident, taskId, start, "patch preflight",
                         preflight.getBlockedReasons(), plan);
             }
             try {
                 patchService.apply(workspace, plan.getUnifiedDiff());
+                log.info("Patch applied: taskId={}, incidentId={}", taskId, incident.getIncidentId());
             } catch (RuntimeException e) {
                 return downgrade(audit, incident, taskId, start, "patch apply", list(e.getMessage()), plan);
             }
@@ -165,6 +191,9 @@ public class DemoOrchestrator {
             PatchValidationResult patchValidation = patchService.validate(workspace, plan.getUnifiedDiff());
             audit.writeJson("patch-validation.json", patchValidation);
             audit.writeText("applied.diff", patchService.currentDiff(workspace));
+            log.info("Applied patch validation completed: taskId={}, incidentId={}, valid={}, files={}",
+                    taskId, incident.getIncidentId(), patchValidation.isValid(),
+                    patchValidation.getChangedFiles().size());
             if (!patchValidation.isValid()) {
                 return downgrade(audit, incident, taskId, start, "patch policy",
                         patchValidation.getBlockedReasons(), plan);
@@ -172,6 +201,9 @@ public class DemoOrchestrator {
 
             VerificationResult verification = testRunner.verify(workspace.getDirectory(), audit);
             audit.writeJson("test-result.json", verification);
+            log.info("Engineering verification completed: taskId={}, incidentId={}, success={}, failureReason={}",
+                    taskId, incident.getIncidentId(), verification.isSuccess(),
+                    verification.getFailureReason());
             if (!verification.isSuccess()) {
                 return downgrade(audit, incident, taskId, start, "engineering verification",
                         list(verification.getFailureReason()), plan);
@@ -195,14 +227,22 @@ public class DemoOrchestrator {
                 prResult.setMessage(dryRun
                         ? "Dry-run completed; branch was not pushed and PR was not created"
                         : "Pull request creation is disabled by configuration");
+                log.info("Pull request creation skipped: taskId={}, incidentId={}, dryRun={}, enabled={}",
+                        taskId, incident.getIncidentId(), dryRun, output.isCreatePullRequest());
             } else {
                 String commit = repoManager.commit(workspace, incident, patchValidation.getChangedFiles());
+                log.info("Generated changes committed: taskId={}, incidentId={}, commit={}, branch={}",
+                        taskId, incident.getIncidentId(), commit, workspace.getBranch());
                 repoManager.push(workspace);
+                log.info("Generated branch pushed: taskId={}, incidentId={}, branch={}",
+                        taskId, incident.getIncidentId(), workspace.getBranch());
                 String title = github.getTitlePrefix() + "[" + incident.getIncidentId()
                         + "] Fix " + incident.getErrorFingerprint();
                 String body = prBodyBuilder.build(incident, plan, patchValidation, verification, audit);
                 prResult = githubClient.create(workspace.getBranch(), title, body);
                 prResult.setCommit(commit);
+                log.info("Pull request created: taskId={}, incidentId={}, url={}",
+                        taskId, incident.getIncidentId(), prResult.getUrl());
             }
             audit.writeJson("pr-result.json", prResult);
             String status = prResult.isCreated() ? "PR_CREATED" : "DRY_RUN_COMPLETE";
@@ -214,6 +254,8 @@ public class DemoOrchestrator {
 
     private DemoResult downgrade(AuditSession audit, IncidentContext incident, String taskId, Instant start,
                                  String stage, List<String> reasons, LlmPlan plan) {
+        log.warn("Incident workflow downgraded: taskId={}, incidentId={}, stage={}, reasons={}",
+                taskId, incident.getIncidentId(), stage, reasons);
         if (output.isWriteManualReportOnFailure()) {
             manualReportService.write(audit, incident, stage, reasons, plan);
         }
@@ -246,6 +288,9 @@ public class DemoOrchestrator {
         summary.put("github_repo", github.getOwner() + "/" + github.getRepo());
         summary.put("pull_request_url", prUrl);
         audit.writeJson("audit.json", summary);
+        log.info("Incident workflow finished: taskId={}, incidentId={}, status={}, stage={}, durationMs={}",
+                taskId, incident.getIncidentId(), status, stage,
+                java.time.Duration.between(start, Instant.now()).toMillis());
         return result;
     }
 
@@ -287,7 +332,7 @@ public class DemoOrchestrator {
 
     private List<String> validateModelGuard(LlmPlan plan) {
         List<String> blocked = new ArrayList<String>();
-        List<String> confirmations = plan.getForbiddenActionsConfirmed();
+        List<String> confirmations = plan.getForbiddenActions();
         requireConfirmation(confirmations, "no production release", blocked);
         requireConfirmation(confirmations, "no auto merge", blocked);
         requireConfirmation(confirmations, "no production config edit", blocked);
