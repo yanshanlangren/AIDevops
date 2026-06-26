@@ -19,10 +19,13 @@ class PromptBuilderTest {
         String prompt = builder.build(new IncidentContext(), new RetrievalResult());
 
         assertTrue(prompt.contains(
-                "change_plan, target_files, test_plan, risk_notes, validation_steps, and "
-                        + "forbidden_actions MUST always be JSON arrays of strings"));
+                "字段 change_plan、target_files、test_plan、risk_notes、validation_steps 和 "
+                        + "forbidden_actions 必须始终是 JSON 字符串数组"));
         assertTrue(prompt.contains(
                 "[\"no production release\", \"no auto merge\", \"no production config edit\"]"));
-        assertTrue(prompt.contains("Never return a bare string for these fields."));
+        assertTrue(prompt.contains("不能返回裸字符串"));
+        assertTrue(prompt.contains("优先使用结构化补丁格式"));
+        assertTrue(prompt.contains("每个变更文件都必须以 diff --git a/path b/path 开头。"));
+        assertTrue(prompt.contains("@@ -a,b +c,d @@ 这类 hunk 头中的行数必须与后续 hunk 内容严格一致"));
     }
 }

@@ -1,16 +1,27 @@
 package com.example.aidevops.patch;
 
 import com.example.aidevops.config.PolicyProperties;
+import com.example.aidevops.model.FileEdit;
+import com.example.aidevops.model.LlmPlan;
+import com.example.aidevops.model.NewFile;
+import com.example.aidevops.model.PatchApplyCheckResult;
 import com.example.aidevops.model.PatchValidationResult;
 import com.example.aidevops.repo.RepoWorkspace;
 import com.example.aidevops.security.SecretRedactor;
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import org.eclipse.jgit.api.Status;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.springframework.stereotype.Service;
@@ -30,13 +41,22 @@ public class PatchService {
         if (!StringUtils.hasText(unifiedDiff)) {
             throw new IllegalArgumentException("Model output contains no unified_diff");
         }
-        try {
-            workspace.getGit().apply()
-                    .setPatch(new ByteArrayInputStream(unifiedDiff.getBytes(StandardCharsets.UTF_8)))
-                    .call();
-        } catch (GitAPIException e) {
-            throw new IllegalStateException("Generated unified diff cannot be applied cleanly", e);
+        PatchApplyCheckResult result = runGitApply(workspace, unifiedDiff, false);
+        if (!result.isValid()) {
+            throw new IllegalStateException("Generated unified diff cannot be applied cleanly: "
+                    + result.getMessage());
         }
+    }
+
+    public PatchApplyCheckResult checkApply(RepoWorkspace workspace, String unifiedDiff) {
+        if (!StringUtils.hasText(unifiedDiff)) {
+            PatchApplyCheckResult result = new PatchApplyCheckResult();
+            result.setValid(false);
+            result.setCommand("git apply --check --whitespace=nowarn -");
+            result.setMessage("Model output contains no unified_diff");
+            return result;
+        }
+        return runGitApply(workspace, unifiedDiff, true);
     }
 
     public PatchValidationResult preflight(String unifiedDiff) {
@@ -57,31 +77,82 @@ public class PatchService {
         if (result.getDiffLines() > policy.getMaxDiffLines()) {
             result.getBlockedReasons().add("diff line count exceeds " + policy.getMaxDiffLines());
         }
-        boolean testChanged = false;
-        for (String file : declaredFiles) {
-            if (file.startsWith("/") || file.contains("../") || file.equals("..")) {
-                result.getBlockedReasons().add("unsafe patch path: " + file);
-                continue;
-            }
-            if (!isWhitelisted(file)) {
-                result.getBlockedReasons().add("path is outside allowlist: " + file);
-            }
-            if (isBlacklisted(file)) {
-                result.getBlockedReasons().add("path is blacklisted: " + file);
-            }
-            if (file.startsWith(policy.getTestPathPrefix())) {
-                testChanged = true;
-            }
-        }
-        if (policy.isRequireTests() && !testChanged) {
-            result.getBlockedReasons().add("patch does not declare a test file change");
-        }
+        validateDeclaredFiles(declaredFiles, result, "patch does not declare a test file change");
         if (policy.isBlockSecretsInDiff() && redactor.containsSecret(unifiedDiff)) {
             result.getBlockedReasons().add("possible secret detected in diff");
         }
         detectAntiPatterns(unifiedDiff, result);
         result.setValid(result.getBlockedReasons().isEmpty());
         return result;
+    }
+
+    public PatchValidationResult preflightStructured(LlmPlan plan) {
+        PatchValidationResult result = new PatchValidationResult();
+        if (plan == null || !plan.hasStructuredEdits()) {
+            result.getBlockedReasons().add("model output contains no file_edits or new_files");
+            return result;
+        }
+        Set<String> declaredFiles = new LinkedHashSet<String>();
+        int diffLines = 0;
+        StringBuilder structuredText = new StringBuilder();
+        if (plan.getFileEdits() != null) {
+            for (FileEdit edit : plan.getFileEdits()) {
+                String path = normalize(edit == null || edit.getPath() == null ? "" : edit.getPath());
+                declaredFiles.add(path);
+                if (edit != null) {
+                    diffLines += countLines(edit.getOldText()) + countLines(edit.getNewText());
+                    structuredText.append(edit.getOldText()).append('\n')
+                            .append(edit.getNewText()).append('\n');
+                }
+            }
+        }
+        if (plan.getNewFiles() != null) {
+            for (NewFile file : plan.getNewFiles()) {
+                String path = normalize(file == null || file.getPath() == null ? "" : file.getPath());
+                declaredFiles.add(path);
+                if (file != null) {
+                    diffLines += countLines(file.getContent());
+                    structuredText.append(file.getContent()).append('\n');
+                }
+            }
+        }
+        result.setChangedFiles(new ArrayList<String>(declaredFiles));
+        result.setDiffLines(diffLines);
+        if (declaredFiles.isEmpty()) {
+            result.getBlockedReasons().add("structured edit contains no target files");
+        }
+        if (declaredFiles.size() > policy.getMaxChangedFiles()) {
+            result.getBlockedReasons().add("declared file count exceeds " + policy.getMaxChangedFiles());
+        }
+        if (result.getDiffLines() > policy.getMaxDiffLines()) {
+            result.getBlockedReasons().add("structured edit line count exceeds " + policy.getMaxDiffLines());
+        }
+        validateDeclaredFiles(declaredFiles, result, "structured edit does not declare a test file change");
+        if (policy.isBlockSecretsInDiff() && redactor.containsSecret(structuredText.toString())) {
+            result.getBlockedReasons().add("possible secret detected in structured edit");
+        }
+        result.setValid(result.getBlockedReasons().isEmpty());
+        return result;
+    }
+
+    public void applyStructuredEdits(RepoWorkspace workspace, LlmPlan plan) {
+        if (plan == null || !plan.hasStructuredEdits()) {
+            throw new IllegalArgumentException("Model output contains no structured edits");
+        }
+        try {
+            if (plan.getFileEdits() != null) {
+                for (FileEdit edit : plan.getFileEdits()) {
+                    applyFileEdit(workspace, edit);
+                }
+            }
+            if (plan.getNewFiles() != null) {
+                for (NewFile file : plan.getNewFiles()) {
+                    createNewFile(workspace, file);
+                }
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot apply structured edit", e);
+        }
     }
 
     public PatchValidationResult validate(RepoWorkspace workspace, String unifiedDiff) {
@@ -100,22 +171,11 @@ public class PatchService {
             result.getBlockedReasons().add("diff line count exceeds " + policy.getMaxDiffLines());
         }
 
-        boolean testChanged = false;
+        Set<String> normalizedChanged = new LinkedHashSet<String>();
         for (String file : changed) {
-            String normalized = normalize(file);
-            if (!isWhitelisted(normalized)) {
-                result.getBlockedReasons().add("path is outside allowlist: " + normalized);
-            }
-            if (isBlacklisted(normalized)) {
-                result.getBlockedReasons().add("path is blacklisted: " + normalized);
-            }
-            if (normalized.startsWith(policy.getTestPathPrefix())) {
-                testChanged = true;
-            }
+            normalizedChanged.add(normalize(file));
         }
-        if (policy.isRequireTests() && !testChanged) {
-            result.getBlockedReasons().add("patch does not add or modify a test file");
-        }
+        validateDeclaredFiles(normalizedChanged, result, "patch does not add or modify a test file");
         if (policy.isBlockSecretsInDiff() && redactor.containsSecret(unifiedDiff)) {
             result.getBlockedReasons().add("possible secret detected in diff");
         }
@@ -125,13 +185,26 @@ public class PatchService {
     }
 
     public String currentDiff(RepoWorkspace workspace) {
-        try {
-            ByteArrayOutputStream output = new ByteArrayOutputStream();
-            workspace.getGit().diff().setOutputStream(output).call();
-            return new String(output.toByteArray(), StandardCharsets.UTF_8);
-        } catch (GitAPIException e) {
-            throw new IllegalStateException("Cannot read current repository diff", e);
+        StringBuilder diff = new StringBuilder();
+        PatchApplyCheckResult tracked = runGitCommand(
+                workspace, Arrays.asList("git", "diff", "--no-ext-diff", "--binary"));
+        if (!tracked.isValid()) {
+            throw new IllegalStateException("Cannot read current repository diff: " + tracked.getMessage());
         }
+        diff.append(tracked.getStdout() == null ? "" : tracked.getStdout());
+        for (String file : untrackedFiles(workspace)) {
+            String normalized = normalize(file);
+            Path target = workspace.getDirectory().resolve(normalized);
+            if (!Files.exists(target)) {
+                continue;
+            }
+            PatchApplyCheckResult untracked = runGitCommand(
+                    workspace, Arrays.asList("git", "diff", "--no-index", "--", "/dev/null", normalized));
+            if (untracked.getExitCode() != null && untracked.getExitCode().intValue() == 1) {
+                diff.append(untracked.getStdout() == null ? "" : untracked.getStdout());
+            }
+        }
+        return diff.toString();
     }
 
     private Set<String> statusFiles(RepoWorkspace workspace) {
@@ -147,6 +220,14 @@ public class PatchService {
             return files;
         } catch (GitAPIException e) {
             throw new IllegalStateException("Cannot inspect changed files", e);
+        }
+    }
+
+    private Set<String> untrackedFiles(RepoWorkspace workspace) {
+        try {
+            return new LinkedHashSet<String>(workspace.getGit().status().call().getUntracked());
+        } catch (GitAPIException e) {
+            throw new IllegalStateException("Cannot inspect untracked files", e);
         }
     }
 
@@ -170,6 +251,28 @@ public class PatchService {
             files.add(normalize(path));
         }
         return files;
+    }
+
+    private void validateDeclaredFiles(Set<String> files, PatchValidationResult result, String missingTestMessage) {
+        boolean testChanged = false;
+        for (String file : files) {
+            if (file.startsWith("/") || file.contains("../") || file.equals("..") || file.length() == 0) {
+                result.getBlockedReasons().add("unsafe patch path: " + file);
+                continue;
+            }
+            if (!isWhitelisted(file)) {
+                result.getBlockedReasons().add("path is outside allowlist: " + file);
+            }
+            if (isBlacklisted(file)) {
+                result.getBlockedReasons().add("path is blacklisted: " + file);
+            }
+            if (file.startsWith(policy.getTestPathPrefix())) {
+                testChanged = true;
+            }
+        }
+        if (policy.isRequireTests() && !testChanged) {
+            result.getBlockedReasons().add(missingTestMessage);
+        }
     }
 
     private boolean isWhitelisted(String file) {
@@ -196,6 +299,9 @@ public class PatchService {
     }
 
     private int countDiffLines(String diff) {
+        if (diff == null) {
+            return 0;
+        }
         int count = 0;
         for (String line : diff.split("\\r?\\n")) {
             if ((line.startsWith("+") && !line.startsWith("+++"))
@@ -206,8 +312,223 @@ public class PatchService {
         return count;
     }
 
+    private int countLines(String value) {
+        if (value == null || value.isEmpty()) {
+            return 0;
+        }
+        return value.split("\\r?\\n", -1).length;
+    }
+
+    private void applyFileEdit(RepoWorkspace workspace, FileEdit edit) throws IOException {
+        if (edit == null || !StringUtils.hasText(edit.getPath())) {
+            throw new IllegalArgumentException("structured file_edit misses path");
+        }
+        if (edit.getOldText() == null || edit.getNewText() == null) {
+            throw new IllegalArgumentException("structured file_edit misses old_text or new_text for "
+                    + edit.getPath());
+        }
+        Path target = safeResolve(workspace, edit.getPath());
+        if (!Files.isRegularFile(target)) {
+            throw new IllegalStateException("structured edit target file does not exist: " + edit.getPath());
+        }
+        String content = new String(Files.readAllBytes(target), StandardCharsets.UTF_8);
+        String lineSeparator = detectLineSeparator(content);
+        String oldText = edit.getOldText();
+        String newText = convertLineEndings(edit.getNewText(), lineSeparator);
+        int first = content.indexOf(oldText);
+        if (first < 0) {
+            oldText = convertLineEndings(edit.getOldText(), lineSeparator);
+            first = content.indexOf(oldText);
+        }
+        if (first < 0) {
+            throw new IllegalStateException("structured edit old_text was not found in " + edit.getPath());
+        }
+        int second = content.indexOf(oldText, first + oldText.length());
+        if (second >= 0) {
+            throw new IllegalStateException("structured edit old_text matched multiple locations in "
+                    + edit.getPath());
+        }
+        String updated = content.substring(0, first) + newText
+                + content.substring(first + oldText.length());
+        Files.write(target, updated.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String detectLineSeparator(String content) {
+        if (content != null && content.contains("\r\n")) {
+            return "\r\n";
+        }
+        if (content != null && content.contains("\r")) {
+            return "\r";
+        }
+        return "\n";
+    }
+
+    private String convertLineEndings(String value, String lineSeparator) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.replace("\r\n", "\n").replace("\r", "\n");
+        if ("\n".equals(lineSeparator)) {
+            return normalized;
+        }
+        return normalized.replace("\n", lineSeparator);
+    }
+
+    private void createNewFile(RepoWorkspace workspace, NewFile file) throws IOException {
+        if (file == null || !StringUtils.hasText(file.getPath())) {
+            throw new IllegalArgumentException("structured new_file misses path");
+        }
+        if (file.getContent() == null) {
+            throw new IllegalArgumentException("structured new_file misses content for " + file.getPath());
+        }
+        Path target = safeResolve(workspace, file.getPath());
+        if (Files.exists(target)) {
+            throw new IllegalStateException("structured new_file already exists: " + file.getPath());
+        }
+        if (target.getParent() != null) {
+            Files.createDirectories(target.getParent());
+        }
+        Files.write(target, file.getContent().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private Path safeResolve(RepoWorkspace workspace, String path) {
+        String normalized = normalize(path);
+        if (normalized.startsWith("/") || normalized.contains("../") || normalized.equals("..")) {
+            throw new IllegalArgumentException("unsafe structured edit path: " + path);
+        }
+        Path root = workspace.getDirectory().toAbsolutePath().normalize();
+        Path target = root.resolve(normalized).normalize();
+        if (!target.startsWith(root)) {
+            throw new IllegalArgumentException("structured edit path escapes repository: " + path);
+        }
+        return target;
+    }
+
+    private PatchApplyCheckResult runGitApply(RepoWorkspace workspace, String unifiedDiff, boolean checkOnly) {
+        List<String> command = new ArrayList<String>();
+        command.add("git");
+        command.add("apply");
+        if (checkOnly) {
+            command.add("--check");
+        }
+        command.add("--whitespace=nowarn");
+        command.add("-");
+        PatchApplyCheckResult result = new PatchApplyCheckResult();
+        result.setCommand(joinCommand(command));
+        Process process = null;
+        try {
+            ProcessBuilder builder = new ProcessBuilder(command);
+            builder.directory(workspace.getDirectory().toFile());
+            process = builder.start();
+            StreamCollector stdout = new StreamCollector(process.getInputStream());
+            StreamCollector stderr = new StreamCollector(process.getErrorStream());
+            Thread stdoutThread = new Thread(stdout, "git-apply-stdout");
+            Thread stderrThread = new Thread(stderr, "git-apply-stderr");
+            stdoutThread.start();
+            stderrThread.start();
+            Writer writer = new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8);
+            writer.write(unifiedDiff);
+            writer.close();
+            boolean finished = process.waitFor(30, TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                result.setValid(false);
+                result.setMessage("git apply timed out after 30 seconds");
+                return result;
+            }
+            stdoutThread.join(1000L);
+            stderrThread.join(1000L);
+            result.setExitCode(process.exitValue());
+            result.setStdout(stdout.getContent());
+            result.setStderr(stderr.getContent());
+            result.setValid(process.exitValue() == 0);
+            result.setMessage(buildGitApplyMessage(result));
+            return result;
+        } catch (IOException e) {
+            result.setValid(false);
+            result.setMessage("cannot execute git apply: " + e.getMessage());
+            return result;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            if (process != null) {
+                process.destroyForcibly();
+            }
+            result.setValid(false);
+            result.setMessage("interrupted while executing git apply");
+            return result;
+        }
+    }
+
+    private PatchApplyCheckResult runGitCommand(RepoWorkspace workspace, List<String> command) {
+        PatchApplyCheckResult result = new PatchApplyCheckResult();
+        result.setCommand(joinCommand(command));
+        Process process = null;
+        try {
+            ProcessBuilder builder = new ProcessBuilder(command);
+            builder.directory(workspace.getDirectory().toFile());
+            process = builder.start();
+            StreamCollector stdout = new StreamCollector(process.getInputStream());
+            StreamCollector stderr = new StreamCollector(process.getErrorStream());
+            Thread stdoutThread = new Thread(stdout, "git-command-stdout");
+            Thread stderrThread = new Thread(stderr, "git-command-stderr");
+            stdoutThread.start();
+            stderrThread.start();
+            boolean finished = process.waitFor(30, TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                result.setValid(false);
+                result.setMessage("git command timed out after 30 seconds");
+                return result;
+            }
+            stdoutThread.join(1000L);
+            stderrThread.join(1000L);
+            result.setExitCode(process.exitValue());
+            result.setStdout(stdout.getContent());
+            result.setStderr(stderr.getContent());
+            result.setValid(process.exitValue() == 0);
+            result.setMessage(buildGitApplyMessage(result));
+            return result;
+        } catch (IOException e) {
+            result.setValid(false);
+            result.setMessage("cannot execute git command: " + e.getMessage());
+            return result;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            if (process != null) {
+                process.destroyForcibly();
+            }
+            result.setValid(false);
+            result.setMessage("interrupted while executing git command");
+            return result;
+        }
+    }
+
+    private String buildGitApplyMessage(PatchApplyCheckResult result) {
+        if (result.isValid()) {
+            return "git apply check passed";
+        }
+        if (StringUtils.hasText(result.getStderr())) {
+            return result.getStderr().trim();
+        }
+        if (StringUtils.hasText(result.getStdout())) {
+            return result.getStdout().trim();
+        }
+        return "git apply failed with exit code " + result.getExitCode();
+    }
+
+    private String joinCommand(List<String> command) {
+        StringBuilder builder = new StringBuilder();
+        for (String part : command) {
+            if (builder.length() > 0) {
+                builder.append(' ');
+            }
+            builder.append(part);
+        }
+        return builder.toString();
+    }
+
     private void detectAntiPatterns(String diff, PatchValidationResult result) {
-        String compact = diff.replaceAll("\\s+", " ");
+        String compact = diff == null ? "" : diff.replaceAll("\\s+", " ");
         if (compact.contains("catch (") && compact.matches(".*catch \\([^)]*\\) \\{\\s*\\}.*")) {
             result.getBlockedReasons().add("empty catch block detected");
         }
@@ -215,12 +536,38 @@ public class PatchService {
             result.getBlockedReasons().add("possible hard-coded success path detected");
         }
         if (policy.isBlockProductionConfigEdit()
-                && (diff.contains("application-prod") || diff.contains("deploy/prod"))) {
+                && (compact.contains("application-prod") || compact.contains("deploy/prod"))) {
             result.getBlockedReasons().add("production configuration change detected");
         }
     }
 
     private String normalize(String value) {
-        return value.replace('\\', '/');
+        return value == null ? "" : value.replace('\\', '/');
+    }
+
+    private static class StreamCollector implements Runnable {
+        private final InputStream input;
+        private final ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+        private StreamCollector(InputStream input) {
+            this.input = input;
+        }
+
+        @Override
+        public void run() {
+            byte[] buffer = new byte[4096];
+            int read;
+            try {
+                while ((read = input.read(buffer)) >= 0) {
+                    output.write(buffer, 0, read);
+                }
+            } catch (IOException ignored) {
+                // Process-level result still reports the useful failure.
+            }
+        }
+
+        private String getContent() {
+            return new String(output.toByteArray(), StandardCharsets.UTF_8);
+        }
     }
 }

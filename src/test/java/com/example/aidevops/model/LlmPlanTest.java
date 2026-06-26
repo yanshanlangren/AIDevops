@@ -122,4 +122,28 @@ class LlmPlanTest {
         assertFalse(json.contains("risk_notice"));
         assertFalse(json.contains("forbidden_actions_confirmed"));
     }
+
+    @Test
+    void acceptsStructuredFileEditsAndNewFiles() throws Exception {
+        LlmPlan plan = mapper.readValue(
+                "{"
+                        + "\"file_edits\":[{"
+                        + "\"path\":\"src/main/java/demo/A.java\","
+                        + "\"old_text\":\"old\","
+                        + "\"new_text\":\"new\""
+                        + "}],"
+                        + "\"new_files\":[{"
+                        + "\"path\":\"src/test/java/demo/ATest.java\","
+                        + "\"content\":\"test\""
+                        + "}]"
+                        + "}",
+                LlmPlan.class);
+
+        assertTrue(plan.hasStructuredEdits());
+        assertEquals("src/main/java/demo/A.java", plan.getFileEdits().get(0).getPath());
+        assertEquals("old", plan.getFileEdits().get(0).getOldText());
+        assertEquals("new", plan.getFileEdits().get(0).getNewText());
+        assertEquals("src/test/java/demo/ATest.java", plan.getNewFiles().get(0).getPath());
+        assertEquals("test", plan.getNewFiles().get(0).getContent());
+    }
 }

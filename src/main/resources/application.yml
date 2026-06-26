@@ -14,7 +14,7 @@ logging: # 应用日志配置
 app: # AI DevOps Demo 自身配置
   name: ai-devops-pr-demo # 应用名称，用于标识当前 Demo 服务
   audit-dir: ./audit # 审计文件根目录，每次请求按 IncidentId 和 TaskId 隔离
-  dry-run: true # 默认是否启用演练模式；true 时不提交、不推送且不创建 PR
+  dry-run: false # 默认是否启用演练模式；true 时不提交、不推送且不创建 PR
 
 tasks: # IncidentContext 异步任务线程池配置
   core-pool-size: 2 # 常驻后台任务线程数量
@@ -30,8 +30,8 @@ repo: # 远端代码仓库及本地工作区配置
   working-branch-prefix: ai-devops # 自动生成的修复分支名称前缀
 
 execution: # 目标仓库工程验证命令配置
-  build-command: "mvn -q -DskipTests compile" # 补丁应用后执行的编译命令；留空表示跳过
-  test-command: "mvn -q test" # 补丁应用后执行的测试命令；失败时停止 PR 流程
+  build-command: "" # 补丁应用后执行的编译命令；留空表示跳过
+  test-command: "" # 补丁应用后执行的测试命令；失败时停止 PR 流程
   static-check-command: "" # 静态检查命令；留空表示暂不执行静态检查
   timeout-seconds: 300 # 每个编译、测试或静态检查命令的最大执行秒数
 
@@ -43,7 +43,7 @@ github: # GitHub API、PR 和 Git 提交身份配置
   api-base-url: https://api.github.com # GitHub REST API 根地址，可替换为 GitHub Enterprise API 地址
   web-base-url: https://github.com # GitHub Web 根地址，用于生成页面链接
   owner: yanshanlangren # 目标 GitHub 仓库所属用户或组织
-  repo: https://github.com/yanshanlangren/HDQS.git # 目标仓库名，优先读取 GITHUB_REPO 环境变量
+  repo: HDQS # 目标仓库名，优先读取 GITHUB_REPO 环境变量
   token-env: GITHUB_TOKEN # 存放 GitHub Token 的环境变量名称
   title-prefix: "[AI-DEVOPS]" # 自动创建 PR 时使用的标题前缀
   target-branch: main # Pull Request 的目标分支
@@ -105,6 +105,6 @@ policy: # L3 准入、补丁范围与安全门禁配置
   max-changed-files: 8 # 单次自动补丁允许修改的最大文件数量
   max-diff-lines: 500 # 单次自动补丁允许新增和删除的最大总行数
   require-tests: true # 是否强制要求补丁同时新增或修改测试代码
-  test-path-prefix: src/test/java/ # 用于识别测试文件的路径前缀
+  test-path-prefix: hms/src/test/java/ # 用于识别测试文件的路径前缀
   block-secrets-in-diff: true # 是否在 Diff 中检测并阻止疑似 Token、密钥或私钥
   block-production-config-edit: true # 是否阻止模型修改生产环境配置

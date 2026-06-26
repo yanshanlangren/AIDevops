@@ -15,6 +15,7 @@ import com.example.aidevops.model.AdmissionResult;
 import com.example.aidevops.model.DemoResult;
 import com.example.aidevops.model.IncidentContext;
 import com.example.aidevops.model.LlmPlan;
+import com.example.aidevops.model.PatchApplyCheckResult;
 import com.example.aidevops.model.PatchValidationResult;
 import com.example.aidevops.model.PrResult;
 import com.example.aidevops.model.RetrievalResult;
@@ -170,22 +171,87 @@ public class DemoOrchestrator {
                 return downgrade(audit, incident, taskId, start, "model policy", modelGuardReasons, plan);
             }
 
-            PatchValidationResult preflight = patchService.preflight(plan.getUnifiedDiff());
-            audit.writeJson("patch-preflight.json", preflight);
-            audit.writeText("patch.diff", redactor.redactText(
-                    plan.getUnifiedDiff() == null ? "" : plan.getUnifiedDiff()));
-            log.info("Patch preflight completed: taskId={}, incidentId={}, valid={}, files={}, diffLines={}",
-                    taskId, incident.getIncidentId(), preflight.isValid(),
-                    preflight.getChangedFiles().size(), preflight.getDiffLines());
-            if (!preflight.isValid()) {
-                return downgrade(audit, incident, taskId, start, "patch preflight",
-                        preflight.getBlockedReasons(), plan);
-            }
-            try {
-                patchService.apply(workspace, plan.getUnifiedDiff());
-                log.info("Patch applied: taskId={}, incidentId={}", taskId, incident.getIncidentId());
-            } catch (RuntimeException e) {
-                return downgrade(audit, incident, taskId, start, "patch apply", list(e.getMessage()), plan);
+            if (plan.hasStructuredEdits()) {
+                PatchValidationResult structuredPreflight = patchService.preflightStructured(plan);
+                audit.writeJson("structured-edit-preflight.json", structuredPreflight);
+                log.info("Structured edit preflight completed: taskId={}, incidentId={}, valid={}, files={}, lines={}",
+                        taskId, incident.getIncidentId(), structuredPreflight.isValid(),
+                        structuredPreflight.getChangedFiles().size(), structuredPreflight.getDiffLines());
+                if (!structuredPreflight.isValid()) {
+                    return downgrade(audit, incident, taskId, start, "structured edit preflight",
+                            structuredPreflight.getBlockedReasons(), plan);
+                }
+                try {
+                    patchService.applyStructuredEdits(workspace, plan);
+                    plan.setUnifiedDiff(patchService.currentDiff(workspace));
+                    audit.writeText("patch.diff", redactor.redactText(plan.getUnifiedDiff()));
+                    log.info("Structured edits applied and converted to git diff: taskId={}, incidentId={}",
+                            taskId, incident.getIncidentId());
+                } catch (RuntimeException e) {
+                    return downgrade(audit, incident, taskId, start, "structured edit apply",
+                            list(e.getMessage()), plan);
+                }
+                PatchValidationResult generatedPreflight = patchService.preflight(plan.getUnifiedDiff());
+                audit.writeJson("generated-patch-preflight.json", generatedPreflight);
+                if (!generatedPreflight.isValid()) {
+                    return downgrade(audit, incident, taskId, start, "generated patch preflight",
+                            generatedPreflight.getBlockedReasons(), plan);
+                }
+            } else {
+                audit.writeText("patch-original.diff", redactor.redactText(
+                        plan.getUnifiedDiff() == null ? "" : plan.getUnifiedDiff()));
+                PatchValidationResult preflight = patchService.preflight(plan.getUnifiedDiff());
+                audit.writeJson("patch-preflight.json", preflight);
+                log.info("Patch preflight completed: taskId={}, incidentId={}, valid={}, files={}, diffLines={}",
+                        taskId, incident.getIncidentId(), preflight.isValid(),
+                        preflight.getChangedFiles().size(), preflight.getDiffLines());
+                if (!preflight.isValid()) {
+                    return downgrade(audit, incident, taskId, start, "patch preflight",
+                            preflight.getBlockedReasons(), plan);
+                }
+
+                PatchApplyCheckResult applyCheck = patchService.checkApply(workspace, plan.getUnifiedDiff());
+                audit.writeJson("patch-apply-check.json", applyCheck);
+                if (!applyCheck.isValid()) {
+                    audit.writeText("patch-apply-check-error.log", applyCheck.getMessage());
+                    log.warn("Patch apply check failed; requesting one model repair: taskId={}, incidentId={}, error={}",
+                            taskId, incident.getIncidentId(), applyCheck.getMessage());
+                    String repairPrompt = promptBuilder.buildPatchRepairPrompt(
+                            incident, retrieval, plan, applyCheck.getMessage());
+                    audit.writeText("patch-repair-prompt.txt", repairPrompt);
+                    LlmPlan repairedPlan = llmGateway.generate(repairPrompt);
+                    audit.writeJson("llm-patch-repair-output.json", redacted(repairedPlan));
+                    List<String> repairGuardReasons = validateModelGuard(repairedPlan);
+                    if (!repairGuardReasons.isEmpty()) {
+                        return downgrade(audit, incident, taskId, start, "patch repair model policy",
+                                repairGuardReasons, repairedPlan);
+                    }
+                    PatchValidationResult repairPreflight = patchService.preflight(repairedPlan.getUnifiedDiff());
+                    audit.writeJson("patch-repair-preflight.json", repairPreflight);
+                    audit.writeText("patch-repaired.diff", redactor.redactText(
+                            repairedPlan.getUnifiedDiff() == null ? "" : repairedPlan.getUnifiedDiff()));
+                    if (!repairPreflight.isValid()) {
+                        return downgrade(audit, incident, taskId, start, "patch repair preflight",
+                                repairPreflight.getBlockedReasons(), repairedPlan);
+                    }
+                    PatchApplyCheckResult repairCheck = patchService.checkApply(workspace, repairedPlan.getUnifiedDiff());
+                    audit.writeJson("patch-repair-apply-check.json", repairCheck);
+                    if (!repairCheck.isValid()) {
+                        audit.writeText("patch-repair-apply-check-error.log", repairCheck.getMessage());
+                        return downgrade(audit, incident, taskId, start, "patch apply check",
+                                list("patch failed git apply --check and one repair attempt also failed: "
+                                        + repairCheck.getMessage()), repairedPlan);
+                    }
+                    plan = repairedPlan;
+                }
+                audit.writeText("patch.diff", redactor.redactText(
+                        plan.getUnifiedDiff() == null ? "" : plan.getUnifiedDiff()));
+                try {
+                    patchService.apply(workspace, plan.getUnifiedDiff());
+                    log.info("Patch applied: taskId={}, incidentId={}", taskId, incident.getIncidentId());
+                } catch (RuntimeException e) {
+                    return downgrade(audit, incident, taskId, start, "patch apply", list(e.getMessage()), plan);
+                }
             }
 
             PatchValidationResult patchValidation = patchService.validate(workspace, plan.getUnifiedDiff());

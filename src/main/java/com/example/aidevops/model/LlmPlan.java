@@ -34,6 +34,10 @@ public class LlmPlan {
     private List<String> forbiddenActions = new ArrayList<String>();
     @JsonProperty("unified_diff")
     private String unifiedDiff;
+    @JsonProperty("file_edits")
+    private List<FileEdit> fileEdits = new ArrayList<FileEdit>();
+    @JsonProperty("new_files")
+    private List<NewFile> newFiles = new ArrayList<NewFile>();
 
     public String getRootCauseHypothesis() {
         return rootCauseHypothesis;
@@ -105,5 +109,26 @@ public class LlmPlan {
 
     public void setUnifiedDiff(String unifiedDiff) {
         this.unifiedDiff = unifiedDiff;
+    }
+
+    public List<FileEdit> getFileEdits() {
+        return fileEdits;
+    }
+
+    public void setFileEdits(List<FileEdit> fileEdits) {
+        this.fileEdits = fileEdits;
+    }
+
+    public List<NewFile> getNewFiles() {
+        return newFiles;
+    }
+
+    public void setNewFiles(List<NewFile> newFiles) {
+        this.newFiles = newFiles;
+    }
+
+    public boolean hasStructuredEdits() {
+        return (fileEdits != null && !fileEdits.isEmpty())
+                || (newFiles != null && !newFiles.isEmpty());
     }
 }
