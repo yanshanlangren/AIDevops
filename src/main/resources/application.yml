@@ -55,8 +55,8 @@ github: # GitHub API、PR 和 Git 提交身份配置
     - ai-devops # 标识由 AI DevOps 流程创建的 PR 标签
     - demo # 标识当前 PR 来源于 Demo 流程的标签
 
-model: # OpenAI-compatible 大模型调用配置
-  provider: openai-compatible # 模型服务协议类型，当前仅支持 OpenAI-compatible
+model: # 大模型服务协议、请求限制及代码上下文配置
+  provider: openai-compatible # 模型服务协议类型；可选 openai-compatible 或 chatabc
   api-base-url: ${LLM_API_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1} # 模型 API 根地址，优先读取 LLM_API_BASE_URL
   api-key-env: LLM_API_KEY # 存放模型 API Key 的环境变量名称
   model-name: ${LLM_MODEL_NAME:qwen3.7-max} # 调用的模型名称，优先读取 LLM_MODEL_NAME
@@ -69,6 +69,16 @@ model: # OpenAI-compatible 大模型调用配置
   max-files: 10 # 单次分析允许进入模型上下文的最大候选文件数量
   snippet-context-lines: 60 # 每个关键词或方法命中点前后保留的源码行数
   max-snippets-per-file: 3 # 单个文件最多提取的独立代码片段数量
+  chatabc: # ChatABC 两阶段会话协议配置，仅在 provider=chatabc 时生效
+    init-session-path: /chatabc/init_session # 初始化会话接口路径，将与 api-base-url 拼接
+    chat-path: /chatabc/chat # 携带 session_id 发送 Prompt 的对话接口路径
+    app-id: "" # ChatABC 请求公共字段 appId，由目标服务分配
+    tr-code: "" # ChatABC 请求公共字段 trCode，由目标服务约定
+    tr-version: "" # ChatABC 请求公共字段 trVersion，由目标服务约定
+    agent-id: "" # ChatABC 请求公共字段 agent_id，对应目标智能体标识
+    stream: true # 是否要求 chat 接口返回 SSE 流；建议保持 true
+    require-api-key: false # 是否强制从 api-key-env 读取密钥并发送 Bearer Authorization
+    success-code: FAIAG0000 # init_session 和 done 事件判定成功时使用的业务响应码
 
 policy: # L3 准入、补丁范围与安全门禁配置
   min-confidence: 0.75 # 允许进入 L3 自动创建 PR 的最低根因置信度

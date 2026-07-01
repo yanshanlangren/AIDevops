@@ -5,10 +5,13 @@ import com.example.aidevops.model.LlmPlan;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpEntity;
@@ -34,24 +37,19 @@ public class LlmGateway {
     }
 
     public LlmPlan generate(String prompt) {
-        if (!"openai-compatible".equalsIgnoreCase(model.getProvider())) {
-            log.error("Unsupported model provider configured: provider={}", model.getProvider());
-            throw new IllegalStateException("Unsupported model provider: " + model.getProvider());
+        if ("openai-compatible".equalsIgnoreCase(model.getProvider())) {
+            return invokeOpenAiCompatible(prompt);
         }
-        return invokeOpenAiCompatible(prompt);
+        if ("chatabc".equalsIgnoreCase(model.getProvider())) {
+            return invokeChatAbc(prompt);
+        }
+        log.error("Unsupported model provider configured: provider={}", model.getProvider());
+        throw new IllegalStateException("Unsupported model provider: " + model.getProvider());
     }
 
     private LlmPlan invokeOpenAiCompatible(String prompt) {
-        String key = System.getenv(model.getApiKeyEnv());
-        if (!StringUtils.hasText(key)) {
-            log.error("Model API key environment variable is missing: environmentVariable={}",
-                    model.getApiKeyEnv());
-            throw new IllegalStateException("Missing model API key environment variable: " + model.getApiKeyEnv());
-        }
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(model.getTimeoutSeconds() * 1000);
-        factory.setReadTimeout(model.getTimeoutSeconds() * 1000);
-        RestTemplate rest = new RestTemplate(factory);
+        String key = readApiKey(true);
+        RestTemplate rest = createRestTemplate();
 
         Map<String, Object> request = new LinkedHashMap<String, Object>();
         request.put("model", model.getModelName());
@@ -97,6 +95,163 @@ public class LlmGateway {
         log.error("Model request failed after retries: model={}, maxAttempts={}",
                 model.getModelName(), model.getMaxAttempts(), last);
         throw new IllegalStateException("Model request failed after retries", last);
+    }
+
+    private LlmPlan invokeChatAbc(String prompt) {
+        ModelProperties.ChatAbc chatabc = model.getChatabc();
+        String key = chatabc.isRequireApiKey() ? readApiKey(true) : null;
+        RestTemplate rest = createRestTemplate();
+        String initUrl = endpoint(chatabc.getInitSessionPath());
+        String chatUrl = endpoint(chatabc.getChatPath());
+        log.info("Model request started: provider={}, initEndpoint={}, chatEndpoint={}, maxAttempts={}",
+                model.getProvider(), initUrl, chatUrl, model.getMaxAttempts());
+
+        RuntimeException last = null;
+        for (int attempt = 1; attempt <= model.getMaxAttempts(); attempt++) {
+            try {
+                String sessionId = initializeChatAbcSession(rest, initUrl, key, chatabc);
+                String content = chatWithChatAbc(rest, chatUrl, key, chatabc, sessionId, prompt);
+                log.info("Model request succeeded: provider={}, attempt={}, sessionId={}",
+                        model.getProvider(), attempt, sessionId);
+                return parsePlan(content);
+            } catch (RuntimeException e) {
+                last = e;
+                log.warn("Model request attempt failed: provider={}, attempt={}, maxAttempts={}, message={}",
+                        model.getProvider(), attempt, model.getMaxAttempts(), e.getMessage(), e);
+                if (attempt < model.getMaxAttempts()) {
+                    sleep(500L * attempt);
+                }
+            }
+        }
+        log.error("Model request failed after retries: provider={}, maxAttempts={}",
+                model.getProvider(), model.getMaxAttempts(), last);
+        throw new IllegalStateException("Model request failed after retries", last);
+    }
+
+    private String initializeChatAbcSession(RestTemplate rest, String url, String key,
+                                            ModelProperties.ChatAbc chatabc) {
+        Map<String, Object> request = baseChatAbcRequest(chatabc);
+        request.put("data", Collections.emptyList());
+        ResponseEntity<JsonNode> response = rest.exchange(url, HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(request, chatAbcHeaders(key, false)), JsonNode.class);
+        JsonNode root = response.getBody();
+        if (root == null) {
+            throw new IllegalStateException("ChatABC init_session returned an empty response");
+        }
+        String responseCode = firstText(root, "resCode", "rescode");
+        if (StringUtils.hasText(chatabc.getSuccessCode()) && !chatabc.getSuccessCode().equals(responseCode)) {
+            throw new IllegalStateException("ChatABC init_session failed: resCode=" + responseCode
+                    + ", message=" + firstText(root, "resMessage", "message"));
+        }
+        String sessionId = root.path("data").path("session_id").asText();
+        if (!StringUtils.hasText(sessionId)) {
+            throw new IllegalStateException("ChatABC init_session response misses data.session_id");
+        }
+        log.info("ChatABC session initialized: sessionId={}", sessionId);
+        return sessionId;
+    }
+
+    private String chatWithChatAbc(RestTemplate rest, String url, String key,
+                                   ModelProperties.ChatAbc chatabc, String sessionId, String prompt) {
+        Map<String, Object> request = baseChatAbcRequest(chatabc);
+        Map<String, Object> chatData = new LinkedHashMap<String, Object>();
+        chatData.put("session_id", sessionId);
+        chatData.put("txt", prompt);
+        chatData.put("files", Collections.emptyList());
+        chatData.put("stream", chatabc.isStream());
+        request.put("data", Collections.singletonList(chatData));
+
+        if (!chatabc.isStream()) {
+            ResponseEntity<JsonNode> response = rest.exchange(url, HttpMethod.POST,
+                    new HttpEntity<Map<String, Object>>(request, chatAbcHeaders(key, false)), JsonNode.class);
+            return extractChatAbcJsonContent(response.getBody(), chatabc.getSuccessCode());
+        }
+
+        return rest.execute(url, HttpMethod.POST, httpRequest -> {
+            HttpHeaders headers = httpRequest.getHeaders();
+            headers.putAll(chatAbcHeaders(key, true));
+            mapper.writeValue(httpRequest.getBody(), request);
+        }, response -> {
+            try {
+                return new ChatAbcSseParser(mapper).parse(response.getBody(), chatabc.getSuccessCode());
+            } catch (IOException e) {
+                throw new IllegalStateException("Failed to read ChatABC stream", e);
+            }
+        });
+    }
+
+    private Map<String, Object> baseChatAbcRequest(ModelProperties.ChatAbc chatabc) {
+        Map<String, Object> request = new LinkedHashMap<String, Object>();
+        request.put("appId", chatabc.getAppId());
+        request.put("trCode", chatabc.getTrCode());
+        request.put("trVersion", chatabc.getTrVersion());
+        request.put("timestamp", System.currentTimeMillis());
+        request.put("agent_id", chatabc.getAgentId());
+        request.put("requestId", UUID.randomUUID().toString());
+        return request;
+    }
+
+    private String extractChatAbcJsonContent(JsonNode root, String successCode) {
+        if (root == null) {
+            throw new IllegalStateException("ChatABC chat returned an empty response");
+        }
+        String responseCode = firstText(root, "resCode", "rescode");
+        if (StringUtils.hasText(successCode) && StringUtils.hasText(responseCode)
+                && !successCode.equals(responseCode)) {
+            throw new IllegalStateException("ChatABC chat failed: resCode=" + responseCode);
+        }
+        JsonNode data = root.path("data");
+        if (data.isArray() && data.size() > 0) {
+            data = data.get(0);
+        }
+        String content = firstText(data, "content", "txt");
+        if (!StringUtils.hasText(content)) {
+            throw new IllegalStateException("ChatABC chat response contains no model content");
+        }
+        return content;
+    }
+
+    private HttpHeaders chatAbcHeaders(String key, boolean stream) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setAccept(Collections.singletonList(stream ? MediaType.TEXT_EVENT_STREAM : MediaType.APPLICATION_JSON));
+        if (StringUtils.hasText(key)) {
+            headers.setBearerAuth(key);
+        }
+        return headers;
+    }
+
+    private RestTemplate createRestTemplate() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(model.getTimeoutSeconds() * 1000);
+        factory.setReadTimeout(model.getTimeoutSeconds() * 1000);
+        return new RestTemplate(factory);
+    }
+
+    private String readApiKey(boolean required) {
+        String key = StringUtils.hasText(model.getApiKeyEnv()) ? System.getenv(model.getApiKeyEnv()) : null;
+        if (required && !StringUtils.hasText(key)) {
+            log.error("Model API key environment variable is missing: environmentVariable={}",
+                    model.getApiKeyEnv());
+            throw new IllegalStateException("Missing model API key environment variable: " + model.getApiKeyEnv());
+        }
+        return key;
+    }
+
+    private String endpoint(String path) {
+        String base = stripTrailingSlash(model.getApiBaseUrl());
+        if (!StringUtils.hasText(path)) {
+            return base;
+        }
+        return base + (path.startsWith("/") ? path : "/" + path);
+    }
+
+    private String firstText(JsonNode node, String first, String second) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return "";
+        }
+        String value = node.path(first).asText();
+        return StringUtils.hasText(value) ? value : node.path(second).asText();
     }
 
     private LlmPlan parsePlan(String content) {

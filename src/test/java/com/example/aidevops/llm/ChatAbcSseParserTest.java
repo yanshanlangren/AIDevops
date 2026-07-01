@@ -1,0 +1,53 @@
+package com.example.aidevops.llm;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+class ChatAbcSseParserTest {
+
+    private final ChatAbcSseParser parser = new ChatAbcSseParser(new ObjectMapper());
+
+    @Test
+    void concatenatesChunkContentWhenMessageEventIsAbsent() throws Exception {
+        String stream = "event:chunk\n"
+                + "data:{\"content\":\"{\\\"root_cause_hypothesis\\\":\\\"\"}\n\n"
+                + "event:chunk\n"
+                + "data:{\"content\":\"原因\\\"}\"}\n\n"
+                + "event:done\n"
+                + "data:{\"status\":\"success\",\"rescode\":\"FAIAG0000\"}\n\n";
+
+        String content = parser.parse(input(stream), "FAIAG0000");
+
+        assertEquals("{\"root_cause_hypothesis\":\"原因\"}", content);
+    }
+
+    @Test
+    void prefersCompleteMessageContentOverChunks() throws Exception {
+        String stream = "event:chunk\n"
+                + "data:{\"content\":\"partial\"}\n\n"
+                + "event:message\n"
+                + "data:{\"content\":\"complete\"}\n\n"
+                + "event:done\n"
+                + "data:{\"status\":\"success\",\"resCode\":\"FAIAG0000\"}\n\n";
+
+        assertEquals("complete", parser.parse(input(stream), "FAIAG0000"));
+    }
+
+    @Test
+    void rejectsUnsuccessfulDoneEvent() {
+        String stream = "event:done\n"
+                + "data:{\"status\":\"failed\",\"rescode\":\"ERROR\"}\n\n";
+
+        assertThrows(IllegalStateException.class,
+                () -> parser.parse(input(stream), "FAIAG0000"));
+    }
+
+    private ByteArrayInputStream input(String value) {
+        return new ByteArrayInputStream(value.getBytes(StandardCharsets.UTF_8));
+    }
+}
