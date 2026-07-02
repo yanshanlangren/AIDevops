@@ -1,24 +1,23 @@
 package com.example.aidevops.repo;
 
 import java.nio.file.Path;
-import org.eclipse.jgit.api.Git;
 
 public class RepoWorkspace implements AutoCloseable {
     private final Path directory;
-    private final Git git;
+    private final String gitCommand;
     private String branch;
 
-    public RepoWorkspace(Path directory, Git git) {
+    public RepoWorkspace(Path directory, String gitCommand) {
         this.directory = directory;
-        this.git = git;
+        this.gitCommand = gitCommand;
     }
 
     public Path getDirectory() {
         return directory;
     }
 
-    public Git getGit() {
-        return git;
+    public String getGitCommand() {
+        return gitCommand;
     }
 
     public String getBranch() {
@@ -31,6 +30,6 @@ public class RepoWorkspace implements AutoCloseable {
 
     @Override
     public void close() {
-        git.close();
+        // Native Git commands do not keep repository resources open.
     }
 }

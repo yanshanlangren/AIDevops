@@ -8,7 +8,6 @@ server: # 内嵌 Web 服务器配置
 logging: # 应用日志配置
   level: # 各包日志级别配置
     root: INFO # 应用默认日志级别
-    org.eclipse.jgit: WARN # JGit 日志级别，避免输出过多仓库操作细节
     com.example.aidevops: INFO # AI DevOps 主流程、模型调用、仓库操作和异常处理日志级别
 
 app: # AI DevOps Demo 自身配置
@@ -28,6 +27,8 @@ repo: # 远端代码仓库及本地工作区配置
   clone-url: https://github.com/yanshanlangren/HDQS.git # 目标 GitHub 仓库的 HTTPS 克隆地址
   default-branch: main # 克隆和创建工作分支时使用的基准分支
   working-branch-prefix: ai-devops # 自动生成的修复分支名称前缀
+  git-command: git # 沙盒内原生 Git 可执行文件名称或绝对路径
+  git-timeout-seconds: 120 # clone、checkout、status、commit 和 push 等 Git 命令的超时秒数
 
 execution: # 目标仓库工程验证命令配置
   build-command: "" # 补丁应用后执行的编译命令；留空表示跳过

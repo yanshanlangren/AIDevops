@@ -22,8 +22,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import org.eclipse.jgit.api.Status;
-import org.eclipse.jgit.api.errors.GitAPIException;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -187,7 +185,7 @@ public class PatchService {
     public String currentDiff(RepoWorkspace workspace) {
         StringBuilder diff = new StringBuilder();
         PatchApplyCheckResult tracked = runGitCommand(
-                workspace, Arrays.asList("git", "diff", "--no-ext-diff", "--binary"));
+                workspace, Arrays.asList(workspace.getGitCommand(), "diff", "--no-ext-diff", "--binary"));
         if (!tracked.isValid()) {
             throw new IllegalStateException("Cannot read current repository diff: " + tracked.getMessage());
         }
@@ -199,7 +197,8 @@ public class PatchService {
                 continue;
             }
             PatchApplyCheckResult untracked = runGitCommand(
-                    workspace, Arrays.asList("git", "diff", "--no-index", "--", "/dev/null", normalized));
+                    workspace, Arrays.asList(workspace.getGitCommand(),
+                            "diff", "--no-index", "--", "/dev/null", normalized));
             if (untracked.getExitCode() != null && untracked.getExitCode().intValue() == 1) {
                 diff.append(untracked.getStdout() == null ? "" : untracked.getStdout());
             }
@@ -208,27 +207,41 @@ public class PatchService {
     }
 
     private Set<String> statusFiles(RepoWorkspace workspace) {
-        try {
-            Status status = workspace.getGit().status().call();
-            Set<String> files = new LinkedHashSet<String>();
-            files.addAll(status.getAdded());
-            files.addAll(status.getChanged());
-            files.addAll(status.getModified());
-            files.addAll(status.getRemoved());
-            files.addAll(status.getMissing());
-            files.addAll(status.getUntracked());
-            return files;
-        } catch (GitAPIException e) {
-            throw new IllegalStateException("Cannot inspect changed files", e);
-        }
+        return parseStatus(workspace, false);
     }
 
     private Set<String> untrackedFiles(RepoWorkspace workspace) {
-        try {
-            return new LinkedHashSet<String>(workspace.getGit().status().call().getUntracked());
-        } catch (GitAPIException e) {
-            throw new IllegalStateException("Cannot inspect untracked files", e);
+        return parseStatus(workspace, true);
+    }
+
+    private Set<String> parseStatus(RepoWorkspace workspace, boolean untrackedOnly) {
+        PatchApplyCheckResult status = runGitCommand(workspace, Arrays.asList(
+                workspace.getGitCommand(), "status", "--porcelain=v1", "-z", "--untracked-files=all"));
+        if (!status.isValid()) {
+            throw new IllegalStateException("Cannot inspect changed files: " + status.getMessage());
         }
+        Set<String> files = new LinkedHashSet<String>();
+        String output = status.getStdout() == null ? "" : status.getStdout();
+        String[] records = output.split("\\u0000", -1);
+        for (int index = 0; index < records.length; index++) {
+            String record = records[index];
+            if (record.length() < 4 || record.charAt(2) != ' ') {
+                continue;
+            }
+            String code = record.substring(0, 2);
+            String path = normalize(record.substring(3));
+            if (!untrackedOnly || "??".equals(code)) {
+                files.add(path);
+            }
+            if (isRenameOrCopy(code) && index + 1 < records.length) {
+                index++;
+            }
+        }
+        return files;
+    }
+
+    private boolean isRenameOrCopy(String code) {
+        return code.indexOf('R') >= 0 || code.indexOf('C') >= 0;
     }
 
     private Set<String> declaredFiles(String diff) {
@@ -406,7 +419,7 @@ public class PatchService {
 
     private PatchApplyCheckResult runGitApply(RepoWorkspace workspace, String unifiedDiff, boolean checkOnly) {
         List<String> command = new ArrayList<String>();
-        command.add("git");
+        command.add(workspace.getGitCommand());
         command.add("apply");
         if (checkOnly) {
             command.add("--check");

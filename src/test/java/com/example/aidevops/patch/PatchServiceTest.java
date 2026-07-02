@@ -8,12 +8,13 @@ import com.example.aidevops.model.PatchApplyCheckResult;
 import com.example.aidevops.model.PatchValidationResult;
 import com.example.aidevops.repo.RepoWorkspace;
 import com.example.aidevops.security.SecretRedactor;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
-import org.eclipse.jgit.api.Git;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -49,8 +50,8 @@ class PatchServiceTest {
 
     @Test
     void detectsCorruptPatchWithGitApplyCheck(@TempDir Path directory) throws Exception {
-        Git git = Git.init().setDirectory(directory.toFile()).call();
-        RepoWorkspace workspace = new RepoWorkspace(directory, git);
+        runGit(directory, "init");
+        RepoWorkspace workspace = new RepoWorkspace(directory, "git");
         String corruptPatch = "diff --git a/src/test/java/demo/ATest.java b/src/test/java/demo/ATest.java\n"
                 + "new file mode 100644\n"
                 + "--- /dev/null\n"
@@ -72,14 +73,8 @@ class PatchServiceTest {
         Path source = directory.resolve("src/main/java/demo/A.java");
         Files.createDirectories(source.getParent());
         Files.write(source, "class A {\n    String value = \"old\";\n}\n".getBytes(StandardCharsets.UTF_8));
-        Git git = Git.init().setDirectory(directory.toFile()).call();
-        git.add().addFilepattern("src/main/java/demo/A.java").call();
-        git.commit()
-                .setMessage("initial")
-                .setAuthor("test", "test@example.com")
-                .setCommitter("test", "test@example.com")
-                .call();
-        RepoWorkspace workspace = new RepoWorkspace(directory, git);
+        initializeRepository(directory, "src/main/java/demo/A.java");
+        RepoWorkspace workspace = new RepoWorkspace(directory, "git");
 
         FileEdit edit = new FileEdit();
         edit.setPath("src/main/java/demo/A.java");
@@ -110,14 +105,8 @@ class PatchServiceTest {
                 + "    //获取rowkey域的值\r\n"
                 + "    String value = rowkeyList.get(rowKeyField.getIndex());\r\n"
                 + "}\r\n").getBytes(StandardCharsets.UTF_8));
-        Git git = Git.init().setDirectory(directory.toFile()).call();
-        git.add().addFilepattern("src/main/java/demo/A.java").call();
-        git.commit()
-                .setMessage("initial")
-                .setAuthor("test", "test@example.com")
-                .setCommitter("test", "test@example.com")
-                .call();
-        RepoWorkspace workspace = new RepoWorkspace(directory, git);
+        initializeRepository(directory, "src/main/java/demo/A.java");
+        RepoWorkspace workspace = new RepoWorkspace(directory, "git");
 
         FileEdit edit = new FileEdit();
         edit.setPath("src/main/java/demo/A.java");
@@ -137,6 +126,36 @@ class PatchServiceTest {
         assertTrue(updated.contains("if (rowKeyField.getIndex() >= rowkeyList.size())"));
         assertTrue(updated.contains("}\r\n"));
         assertFalse(updated.contains("}\n    String value"));
+    }
+
+    private void initializeRepository(Path directory, String file) throws Exception {
+        runGit(directory, "init");
+        runGit(directory, "config", "user.name", "test");
+        runGit(directory, "config", "user.email", "test@example.com");
+        runGit(directory, "add", "--", file);
+        runGit(directory, "commit", "-m", "initial");
+    }
+
+    private void runGit(Path directory, String... arguments) throws Exception {
+        java.util.List<String> command = new java.util.ArrayList<String>();
+        command.add("git");
+        command.addAll(Arrays.asList(arguments));
+        ProcessBuilder builder = new ProcessBuilder(command);
+        builder.directory(directory.toFile());
+        builder.redirectErrorStream(true);
+        Process process = builder.start();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        InputStream input = process.getInputStream();
+        byte[] buffer = new byte[1024];
+        int read;
+        while ((read = input.read(buffer)) >= 0) {
+            output.write(buffer, 0, read);
+        }
+        int exitCode = process.waitFor();
+        if (exitCode != 0) {
+            throw new IllegalStateException("git command failed: "
+                    + new String(output.toByteArray(), StandardCharsets.UTF_8));
+        }
     }
 
     private PatchService service() {

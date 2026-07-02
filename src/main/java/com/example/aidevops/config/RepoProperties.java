@@ -9,6 +9,8 @@ public class RepoProperties {
     private String cloneUrl;
     private String defaultBranch = "main";
     private String workingBranchPrefix = "ai-devops";
+    private String gitCommand = "git";
+    private int gitTimeoutSeconds = 120;
 
     public String getLocalBaseDir() {
         return localBaseDir;
@@ -48,5 +50,21 @@ public class RepoProperties {
 
     public void setWorkingBranchPrefix(String workingBranchPrefix) {
         this.workingBranchPrefix = workingBranchPrefix;
+    }
+
+    public String getGitCommand() {
+        return gitCommand;
+    }
+
+    public void setGitCommand(String gitCommand) {
+        this.gitCommand = gitCommand;
+    }
+
+    public int getGitTimeoutSeconds() {
+        return gitTimeoutSeconds;
+    }
+
+    public void setGitTimeoutSeconds(int gitTimeoutSeconds) {
+        this.gitTimeoutSeconds = gitTimeoutSeconds;
     }
 }

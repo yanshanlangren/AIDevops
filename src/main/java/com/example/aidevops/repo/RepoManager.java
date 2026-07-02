@@ -3,21 +3,21 @@ package com.example.aidevops.repo;
 import com.example.aidevops.config.GithubProperties;
 import com.example.aidevops.config.RepoProperties;
 import com.example.aidevops.model.IncidentContext;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.Collections;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
-import org.eclipse.jgit.api.Git;
-import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.lib.ObjectId;
-import org.eclipse.jgit.transport.CredentialsProvider;
-import org.eclipse.jgit.transport.RefSpec;
-import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -43,49 +43,49 @@ public class RepoManager {
         deleteRecursively(directory);
         try {
             Files.createDirectories(directory.getParent());
-            if (!StringUtils.hasText(repo.getCloneUrl())) {
-                throw new IllegalStateException("repo.clone-url must be configured for a remote GitHub repository");
-            }
-            if (repo.getCloneUrl().contains("github.com/OWNER/REPO")) {
-                throw new IllegalStateException(
-                        "Configure repo.clone-url in application.yml before running the demo");
-            }
-            Git git = cloneRepository(directory);
-            log.info("Repository cloned: incidentId={}, taskId={}, directory={}",
-                    incident.getIncidentId(), taskId, directory);
-            RepoWorkspace workspace = new RepoWorkspace(directory, git);
-            String branch = branchName(incident);
-            git.checkout().setCreateBranch(true).setName(branch).call();
-            workspace.setBranch(branch);
-            log.info("Working branch created: incidentId={}, taskId={}, branch={}",
-                    incident.getIncidentId(), taskId, branch);
-            return workspace;
         } catch (IOException e) {
-            throw new IllegalStateException("Cannot prepare repository workspace " + directory, e);
-        } catch (GitAPIException e) {
-            throw new IllegalStateException("Git operation failed while preparing " + directory, e);
+            throw new IllegalStateException("Cannot create repository workspace parent " + directory.getParent(), e);
         }
+        validateCloneUrl();
+
+        String optionalToken = System.getenv(github.getTokenEnv());
+        runGit(directory.getParent(), optionalToken, Arrays.asList(
+                "clone", "--branch", repo.getDefaultBranch(), "--single-branch", "--",
+                repo.getCloneUrl(), directory.toString()));
+        log.info("Repository cloned: incidentId={}, taskId={}, directory={}",
+                incident.getIncidentId(), taskId, directory);
+
+        RepoWorkspace workspace = new RepoWorkspace(directory, repo.getGitCommand());
+        String branch = branchName(incident);
+        runGit(directory, null, Arrays.asList("checkout", "-b", branch));
+        workspace.setBranch(branch);
+        log.info("Working branch created: incidentId={}, taskId={}, branch={}",
+                incident.getIncidentId(), taskId, branch);
+        return workspace;
     }
 
     public String commit(RepoWorkspace workspace, IncidentContext incident, List<String> approvedFiles) {
-        try {
-            if (approvedFiles == null || approvedFiles.isEmpty()) {
-                throw new IllegalArgumentException("No policy-approved files are available for commit");
-            }
-            for (String file : approvedFiles) {
-                workspace.getGit().add().addFilepattern(file).call();
-            }
-            ObjectId id = workspace.getGit().commit()
-                    .setMessage("[AI-DEVOPS][" + incident.getIncidentId() + "] Prepare automated fix")
-                    .setAuthor(github.getUserName(), github.getUserEmail())
-                    .call()
-                    .getId();
-            log.info("Repository changes committed: incidentId={}, branch={}, commit={}, files={}",
-                    incident.getIncidentId(), workspace.getBranch(), id.name(), approvedFiles.size());
-            return id.name();
-        } catch (GitAPIException e) {
-            throw new IllegalStateException("Cannot commit generated change", e);
+        if (approvedFiles == null || approvedFiles.isEmpty()) {
+            throw new IllegalArgumentException("No policy-approved files are available for commit");
         }
+        List<String> addArguments = new ArrayList<String>();
+        addArguments.add("add");
+        addArguments.add("--");
+        addArguments.addAll(approvedFiles);
+        runGit(workspace.getDirectory(), null, addArguments);
+
+        runGit(workspace.getDirectory(), null, Arrays.asList(
+                "-c", "user.name=" + github.getUserName(),
+                "-c", "user.email=" + github.getUserEmail(),
+                "commit", "-m", "[AI-DEVOPS][" + incident.getIncidentId() + "] Prepare automated fix"));
+        String commitId = runGit(workspace.getDirectory(), null,
+                Arrays.asList("rev-parse", "HEAD")).getStdout().trim();
+        if (!StringUtils.hasText(commitId)) {
+            throw new IllegalStateException("Native Git returned an empty commit id");
+        }
+        log.info("Repository changes committed: incidentId={}, branch={}, commit={}, files={}",
+                incident.getIncidentId(), workspace.getBranch(), commitId, approvedFiles.size());
+        return commitId;
     }
 
     public void push(RepoWorkspace workspace) {
@@ -93,35 +93,85 @@ public class RepoManager {
         if (!StringUtils.hasText(token)) {
             throw new IllegalStateException("Missing GitHub token environment variable: " + github.getTokenEnv());
         }
+        log.info("Pushing repository branch: branch={}", workspace.getBranch());
+        runGit(workspace.getDirectory(), token, Arrays.asList(
+                "push", "--no-verify", "origin", "refs/heads/" + workspace.getBranch()
+                        + ":refs/heads/" + workspace.getBranch()));
+        log.info("Repository branch pushed: branch={}", workspace.getBranch());
+    }
+
+    private GitCommandResult runGit(Path directory, String token, List<String> arguments) {
+        List<String> command = new ArrayList<String>();
+        command.add(repo.getGitCommand());
+        command.addAll(arguments);
+        Process process = null;
         try {
-            log.info("Pushing repository branch: branch={}", workspace.getBranch());
-            workspace.getGit().push()
-                    .setRemote("origin")
-                    .setCredentialsProvider(credentials(token))
-                    .setRefSpecs(new RefSpec("refs/heads/" + workspace.getBranch()
-                            + ":refs/heads/" + workspace.getBranch()))
-                    .call();
-            log.info("Repository branch pushed: branch={}", workspace.getBranch());
-        } catch (GitAPIException e) {
-            throw new IllegalStateException("Cannot push branch " + workspace.getBranch(), e);
+            ProcessBuilder builder = new ProcessBuilder(command);
+            builder.directory(directory.toFile());
+            builder.environment().put("GIT_TERMINAL_PROMPT", "0");
+            if (StringUtils.hasText(token)) {
+                configureAuthentication(builder, token);
+            }
+            process = builder.start();
+            StreamCollector stdout = new StreamCollector(process.getInputStream());
+            StreamCollector stderr = new StreamCollector(process.getErrorStream());
+            Thread stdoutThread = new Thread(stdout, "native-git-stdout");
+            Thread stderrThread = new Thread(stderr, "native-git-stderr");
+            stdoutThread.start();
+            stderrThread.start();
+            boolean finished = process.waitFor(repo.getGitTimeoutSeconds(), TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                throw new IllegalStateException("Native Git command timed out after "
+                        + repo.getGitTimeoutSeconds() + " seconds: " + commandName(arguments));
+            }
+            stdoutThread.join(1000L);
+            stderrThread.join(1000L);
+            GitCommandResult result = new GitCommandResult(
+                    process.exitValue(), stdout.getContent(), stderr.getContent());
+            if (result.getExitCode() != 0) {
+                String detail = StringUtils.hasText(result.getStderr())
+                        ? result.getStderr().trim() : result.getStdout().trim();
+                throw new IllegalStateException("Native Git command failed: command="
+                        + commandName(arguments) + ", exitCode=" + result.getExitCode() + ", detail=" + detail);
+            }
+            return result;
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot execute native Git command " + repo.getGitCommand(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            if (process != null) {
+                process.destroyForcibly();
+            }
+            throw new IllegalStateException("Native Git command was interrupted", e);
         }
     }
 
-    private Git cloneRepository(Path directory) throws GitAPIException {
-        String token = System.getenv(github.getTokenEnv());
-        org.eclipse.jgit.api.CloneCommand command = Git.cloneRepository()
-                .setURI(repo.getCloneUrl())
-                .setDirectory(directory.toFile())
-                .setBranch(repo.getDefaultBranch())
-                .setBranchesToClone(Collections.singletonList("refs/heads/" + repo.getDefaultBranch()));
-        if (StringUtils.hasText(token)) {
-            command.setCredentialsProvider(credentials(token));
-        }
-        return command.call();
+    private void configureAuthentication(ProcessBuilder builder, String token) {
+        String credentials = "x-access-token:" + token;
+        String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
+        builder.environment().put("GIT_CONFIG_COUNT", "1");
+        builder.environment().put("GIT_CONFIG_KEY_0", "http.extraHeader");
+        builder.environment().put("GIT_CONFIG_VALUE_0", "Authorization: Basic " + encoded);
     }
 
-    private CredentialsProvider credentials(String token) {
-        return new UsernamePasswordCredentialsProvider("x-access-token", token);
+    private String commandName(List<String> arguments) {
+        return arguments == null || arguments.isEmpty() ? "git" : "git " + arguments.get(0);
+    }
+
+    private void validateCloneUrl() {
+        if (!StringUtils.hasText(repo.getGitCommand())) {
+            throw new IllegalStateException("repo.git-command must be configured");
+        }
+        if (repo.getGitTimeoutSeconds() <= 0) {
+            throw new IllegalStateException("repo.git-timeout-seconds must be greater than zero");
+        }
+        if (!StringUtils.hasText(repo.getCloneUrl())) {
+            throw new IllegalStateException("repo.clone-url must be configured for a remote GitHub repository");
+        }
+        if (repo.getCloneUrl().contains("github.com/OWNER/REPO")) {
+            throw new IllegalStateException("Configure repo.clone-url in application.yml before running the demo");
+        }
     }
 
     private String branchName(IncidentContext incident) {
@@ -150,12 +200,65 @@ public class RepoManager {
 
                 @Override
                 public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
+                    if (exc != null) {
+                        throw exc;
+                    }
                     Files.delete(dir);
                     return FileVisitResult.CONTINUE;
                 }
             });
         } catch (IOException e) {
             throw new IllegalStateException("Cannot clean repository workspace " + directory, e);
+        }
+    }
+
+    private static class GitCommandResult {
+        private final int exitCode;
+        private final String stdout;
+        private final String stderr;
+
+        private GitCommandResult(int exitCode, String stdout, String stderr) {
+            this.exitCode = exitCode;
+            this.stdout = stdout;
+            this.stderr = stderr;
+        }
+
+        private int getExitCode() {
+            return exitCode;
+        }
+
+        private String getStdout() {
+            return stdout;
+        }
+
+        private String getStderr() {
+            return stderr;
+        }
+    }
+
+    private static class StreamCollector implements Runnable {
+        private final InputStream input;
+        private final ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+        private StreamCollector(InputStream input) {
+            this.input = input;
+        }
+
+        @Override
+        public void run() {
+            byte[] buffer = new byte[4096];
+            int read;
+            try {
+                while ((read = input.read(buffer)) >= 0) {
+                    output.write(buffer, 0, read);
+                }
+            } catch (IOException ignored) {
+                // The process exit code and stderr carry the actionable failure.
+            }
+        }
+
+        private String getContent() {
+            return new String(output.toByteArray(), StandardCharsets.UTF_8);
         }
     }
 }
