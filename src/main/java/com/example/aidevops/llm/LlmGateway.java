@@ -131,7 +131,7 @@ public class LlmGateway {
     private String initializeChatAbcSession(RestTemplate rest, String url, String key,
                                             ModelProperties.ChatAbc chatabc) {
         Map<String, Object> request = baseChatAbcRequest(chatabc);
-        request.put("data", Collections.emptyList());
+        request.put("data", Collections.emptyMap());
         ResponseEntity<JsonNode> response = rest.exchange(url, HttpMethod.POST,
                 new HttpEntity<Map<String, Object>>(request, chatAbcHeaders(key, false)), JsonNode.class);
         JsonNode root = response.getBody();

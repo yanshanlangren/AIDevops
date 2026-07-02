@@ -78,7 +78,7 @@ class LlmGatewayChatAbcTest {
         assertEquals("agent-1", init.path("agent_id").asText());
         assertTrue(init.path("timestamp").isNumber());
         assertFalse(init.path("requestId").asText().isEmpty());
-        assertTrue(init.path("data").isArray());
+        assertTrue(init.path("data").isObject());
         assertEquals(0, init.path("data").size());
 
         JsonNode chatData = chatRequest.get().path("data").get(0);
