@@ -13,22 +13,19 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
-import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestTemplate;
 
 @Service
 public class GithubPullRequestClient {
     private final GithubProperties github;
+    private final GithubAuthentication authentication;
 
-    public GithubPullRequestClient(GithubProperties github) {
+    public GithubPullRequestClient(GithubProperties github, GithubAuthentication authentication) {
         this.github = github;
+        this.authentication = authentication;
     }
 
     public PrResult create(String branch, String title, String body) {
-        String token = System.getenv(github.getTokenEnv());
-        if (!StringUtils.hasText(token)) {
-            throw new IllegalStateException("Missing GitHub token environment variable: " + github.getTokenEnv());
-        }
         String url = strip(github.getApiBaseUrl()) + "/repos/" + github.getOwner() + "/" + github.getRepo() + "/pulls";
         Map<String, Object> request = new LinkedHashMap<String, Object>();
         request.put("title", title);
@@ -39,7 +36,7 @@ public class GithubPullRequestClient {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBearerAuth(token);
+        authentication.configureApi(headers);
         headers.set("Accept", "application/vnd.github+json");
         headers.set("X-GitHub-Api-Version", "2022-11-28");
         RestTemplate rest = new RestTemplate();

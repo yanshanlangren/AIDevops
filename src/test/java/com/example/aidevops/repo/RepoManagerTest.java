@@ -2,6 +2,7 @@ package com.example.aidevops.repo;
 
 import com.example.aidevops.config.GithubProperties;
 import com.example.aidevops.config.RepoProperties;
+import com.example.aidevops.github.GithubAuthentication;
 import com.example.aidevops.model.IncidentContext;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -40,7 +41,7 @@ class RepoManagerTest {
         incident.setIncidentId("INC-TEST-1");
         incident.setErrorFingerprint("rowkey-error");
 
-        RepoManager manager = new RepoManager(repo, github);
+        RepoManager manager = new RepoManager(repo, github, new GithubAuthentication(github));
         RepoWorkspace workspace = manager.prepare(incident, "task-1");
         Files.write(workspace.getDirectory().resolve("README.md"),
                 "changed\n".getBytes(StandardCharsets.UTF_8));

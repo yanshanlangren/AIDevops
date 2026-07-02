@@ -81,7 +81,8 @@ class LlmGatewayChatAbcTest {
         assertTrue(init.path("data").isObject());
         assertEquals(0, init.path("data").size());
 
-        JsonNode chatData = chatRequest.get().path("data").get(0);
+        assertTrue(chatRequest.get().path("data").isObject());
+        JsonNode chatData = chatRequest.get().path("data");
         assertEquals("session-test-1", chatData.path("session_id").asText());
         assertEquals("分析该事故", chatData.path("txt").asText());
         assertTrue(chatData.path("files").isArray());

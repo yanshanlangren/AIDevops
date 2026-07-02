@@ -27,9 +27,14 @@ final class ChatAbcSseParser {
         String line;
         while ((line = reader.readLine()) != null) {
             if (line.isEmpty()) {
-                done = consumeEvent(event, data.toString(), successCode, chunkContent, messageContent) || done;
+                boolean eventDone = consumeEvent(
+                        event, data.toString(), successCode, chunkContent, messageContent);
                 event = null;
                 data.setLength(0);
+                if (eventDone) {
+                    done = true;
+                    break;
+                }
                 continue;
             }
             if (line.startsWith("event:")) {
@@ -56,6 +61,9 @@ final class ChatAbcSseParser {
 
     private boolean consumeEvent(String event, String data, String successCode,
                                  StringBuilder chunkContent, StringBuilder messageContent) throws IOException {
+        if ("chat_started".equalsIgnoreCase(event)) {
+            return false;
+        }
         if (!StringUtils.hasText(data)) {
             return false;
         }

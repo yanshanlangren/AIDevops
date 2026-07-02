@@ -2,6 +2,7 @@ package com.example.aidevops.repo;
 
 import com.example.aidevops.config.GithubProperties;
 import com.example.aidevops.config.RepoProperties;
+import com.example.aidevops.github.GithubAuthentication;
 import com.example.aidevops.model.IncidentContext;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -15,7 +16,6 @@ import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
@@ -29,10 +29,12 @@ public class RepoManager {
 
     private final RepoProperties repo;
     private final GithubProperties github;
+    private final GithubAuthentication authentication;
 
-    public RepoManager(RepoProperties repo, GithubProperties github) {
+    public RepoManager(RepoProperties repo, GithubProperties github, GithubAuthentication authentication) {
         this.repo = repo;
         this.github = github;
+        this.authentication = authentication;
     }
 
     public RepoWorkspace prepare(IncidentContext incident, String taskId) {
@@ -48,8 +50,7 @@ public class RepoManager {
         }
         validateCloneUrl();
 
-        String optionalToken = System.getenv(github.getTokenEnv());
-        runGit(directory.getParent(), optionalToken, Arrays.asList(
+        runGit(directory.getParent(), GitAuthentication.OPTIONAL, Arrays.asList(
                 "clone", "--branch", repo.getDefaultBranch(), "--single-branch", "--",
                 repo.getCloneUrl(), directory.toString()));
         log.info("Repository cloned: incidentId={}, taskId={}, directory={}",
@@ -57,7 +58,7 @@ public class RepoManager {
 
         RepoWorkspace workspace = new RepoWorkspace(directory, repo.getGitCommand());
         String branch = branchName(incident);
-        runGit(directory, null, Arrays.asList("checkout", "-b", branch));
+        runGit(directory, GitAuthentication.NONE, Arrays.asList("checkout", "-b", branch));
         workspace.setBranch(branch);
         log.info("Working branch created: incidentId={}, taskId={}, branch={}",
                 incident.getIncidentId(), taskId, branch);
@@ -72,13 +73,13 @@ public class RepoManager {
         addArguments.add("add");
         addArguments.add("--");
         addArguments.addAll(approvedFiles);
-        runGit(workspace.getDirectory(), null, addArguments);
+        runGit(workspace.getDirectory(), GitAuthentication.NONE, addArguments);
 
-        runGit(workspace.getDirectory(), null, Arrays.asList(
+        runGit(workspace.getDirectory(), GitAuthentication.NONE, Arrays.asList(
                 "-c", "user.name=" + github.getUserName(),
                 "-c", "user.email=" + github.getUserEmail(),
                 "commit", "-m", "[AI-DEVOPS][" + incident.getIncidentId() + "] Prepare automated fix"));
-        String commitId = runGit(workspace.getDirectory(), null,
+        String commitId = runGit(workspace.getDirectory(), GitAuthentication.NONE,
                 Arrays.asList("rev-parse", "HEAD")).getStdout().trim();
         if (!StringUtils.hasText(commitId)) {
             throw new IllegalStateException("Native Git returned an empty commit id");
@@ -89,18 +90,15 @@ public class RepoManager {
     }
 
     public void push(RepoWorkspace workspace) {
-        String token = System.getenv(github.getTokenEnv());
-        if (!StringUtils.hasText(token)) {
-            throw new IllegalStateException("Missing GitHub token environment variable: " + github.getTokenEnv());
-        }
         log.info("Pushing repository branch: branch={}", workspace.getBranch());
-        runGit(workspace.getDirectory(), token, Arrays.asList(
+        runGit(workspace.getDirectory(), GitAuthentication.REQUIRED, Arrays.asList(
                 "push", "--no-verify", "origin", "refs/heads/" + workspace.getBranch()
                         + ":refs/heads/" + workspace.getBranch()));
         log.info("Repository branch pushed: branch={}", workspace.getBranch());
     }
 
-    private GitCommandResult runGit(Path directory, String token, List<String> arguments) {
+    private GitCommandResult runGit(
+            Path directory, GitAuthentication gitAuthentication, List<String> arguments) {
         List<String> command = new ArrayList<String>();
         command.add(repo.getGitCommand());
         command.addAll(arguments);
@@ -109,8 +107,8 @@ public class RepoManager {
             ProcessBuilder builder = new ProcessBuilder(command);
             builder.directory(directory.toFile());
             builder.environment().put("GIT_TERMINAL_PROMPT", "0");
-            if (StringUtils.hasText(token)) {
-                configureAuthentication(builder, token);
+            if (gitAuthentication != GitAuthentication.NONE) {
+                authentication.configureGit(builder, gitAuthentication == GitAuthentication.REQUIRED);
             }
             process = builder.start();
             StreamCollector stdout = new StreamCollector(process.getInputStream());
@@ -145,14 +143,6 @@ public class RepoManager {
             }
             throw new IllegalStateException("Native Git command was interrupted", e);
         }
-    }
-
-    private void configureAuthentication(ProcessBuilder builder, String token) {
-        String credentials = "x-access-token:" + token;
-        String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
-        builder.environment().put("GIT_CONFIG_COUNT", "1");
-        builder.environment().put("GIT_CONFIG_KEY_0", "http.extraHeader");
-        builder.environment().put("GIT_CONFIG_VALUE_0", "Authorization: Basic " + encoded);
     }
 
     private String commandName(List<String> arguments) {
@@ -234,6 +224,12 @@ public class RepoManager {
         private String getStderr() {
             return stderr;
         }
+    }
+
+    private enum GitAuthentication {
+        NONE,
+        OPTIONAL,
+        REQUIRED
     }
 
     private static class StreamCollector implements Runnable {

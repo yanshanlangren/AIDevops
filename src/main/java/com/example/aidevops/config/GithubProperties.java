@@ -10,6 +10,9 @@ public class GithubProperties {
     private String webBaseUrl;
     private String owner;
     private String repo;
+    private String authMode = "token";
+    private String authUsername;
+    private String passwordEnv = "GIT_PASSWORD";
     private String tokenEnv = "GITHUB_TOKEN";
     private String titlePrefix = "[AI-DEVOPS]";
     private String targetBranch = "main";
@@ -49,6 +52,30 @@ public class GithubProperties {
 
     public void setRepo(String repo) {
         this.repo = repo;
+    }
+
+    public String getAuthMode() {
+        return authMode;
+    }
+
+    public void setAuthMode(String authMode) {
+        this.authMode = authMode;
+    }
+
+    public String getAuthUsername() {
+        return authUsername;
+    }
+
+    public void setAuthUsername(String authUsername) {
+        this.authUsername = authUsername;
+    }
+
+    public String getPasswordEnv() {
+        return passwordEnv;
+    }
+
+    public void setPasswordEnv(String passwordEnv) {
+        this.passwordEnv = passwordEnv;
     }
 
     public String getTokenEnv() {

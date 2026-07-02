@@ -47,6 +47,20 @@ class ChatAbcSseParserTest {
                 () -> parser.parse(input(stream), "FAIAG0000"));
     }
 
+    @Test
+    void ignoresChatStartedAndStopsReadingAfterDone() throws Exception {
+        String stream = "event:chat_started\n"
+                + "data:non-json-start-marker\n\n"
+                + "event:message\n"
+                + "data:{\"content\":\"complete\"}\n\n"
+                + "event:done\n"
+                + "data:{\"status\":\"success\",\"rescode\":\"FAIAG0000\"}\n\n"
+                + "event:chunk\n"
+                + "data:invalid-json-that-must-not-be-read\n\n";
+
+        assertEquals("complete", parser.parse(input(stream), "FAIAG0000"));
+    }
+
     private ByteArrayInputStream input(String value) {
         return new ByteArrayInputStream(value.getBytes(StandardCharsets.UTF_8));
     }

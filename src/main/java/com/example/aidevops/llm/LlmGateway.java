@@ -159,7 +159,7 @@ public class LlmGateway {
         chatData.put("txt", prompt);
         chatData.put("files", Collections.emptyList());
         chatData.put("stream", chatabc.isStream());
-        request.put("data", Collections.singletonList(chatData));
+        request.put("data", chatData);
 
         if (!chatabc.isStream()) {
             ResponseEntity<JsonNode> response = rest.exchange(url, HttpMethod.POST,

@@ -45,7 +45,10 @@ github: # GitHub API、PR 和 Git 提交身份配置
   web-base-url: https://github.com # GitHub Web 根地址，用于生成页面链接
   owner: yanshanlangren # 目标 GitHub 仓库所属用户或组织
   repo: HDQS # 目标仓库名，优先读取 GITHUB_REPO 环境变量
-  token-env: GITHUB_TOKEN # 存放 GitHub Token 的环境变量名称
+  auth-mode: username-password # Git 与 PR API 认证模式；可选 username-password 或 token
+  auth-username: ${GIT_USERNAME:} # 用户名密码模式使用的 Git 登录用户名，优先读取 GIT_USERNAME
+  password-env: GIT_PASSWORD # 用户名密码模式下存放 Git 登录密码的环境变量名称
+  token-env: GITHUB_TOKEN # Token 模式下存放 GitHub PAT 或 Access Token 的环境变量名称
   title-prefix: "[AI-DEVOPS]" # 自动创建 PR 时使用的标题前缀
   target-branch: main # Pull Request 的目标分支
   draft: false # 是否将自动创建的 Pull Request 标记为 Draft
