@@ -26,7 +26,7 @@ repo: # 远端代码仓库及本地工作区配置
   target-repo-name: HDQS # 目标仓库名称，用于生成本地工作目录
   clone-url: https://github.com/yanshanlangren/HDQS.git # 目标 GitHub 仓库的 HTTPS 克隆地址
   default-branch: main # 克隆和创建工作分支时使用的基准分支
-  working-branch-prefix: ai-devops # 自动生成的修复分支名称前缀
+  working-branch-prefix: ai-devops # 自动修复分支前缀；最终分支名还会包含 IncidentId、异常指纹和 TaskId 短标识
   git-command: git # 沙盒内原生 Git 可执行文件名称或绝对路径
   git-timeout-seconds: 120 # clone、checkout、status、commit 和 push 等 Git 命令的超时秒数
 
@@ -83,6 +83,7 @@ model: # 大模型服务协议、请求限制及代码上下文配置
     stream: true # 是否要求 chat 接口返回 SSE 流；建议保持 true
     require-api-key: false # 是否强制从 api-key-env 读取密钥并发送 Bearer Authorization
     success-code: FAIAG0000 # init_session 和 done 事件判定成功时使用的业务响应码
+    log-responses: true # 是否打印请求响应；chunk reasoning 实时追加在同一控制台行，遇到新事件后换行
 
 policy: # L3 准入、补丁范围与安全门禁配置
   min-confidence: 0.75 # 允许进入 L3 自动创建 PR 的最低根因置信度

@@ -28,6 +28,7 @@ public class PromptBuilder {
             JsonNode redactedIncident = redactor.redact(mapper.valueToTree(incident));
             StringBuilder prompt = new StringBuilder();
             prompt.append("你是一个受控的 DevOps 软件工程智能体。\n");
+            appendChineseOutputRules(prompt);
             prompt.append("只能基于已提供的事故证据和代码片段进行分析，并生成最小化 Java 变更。\n");
             prompt.append("禁止提出生产发布、自动合并、生产配置修改、权限/认证/风控逻辑修改、");
             prompt.append("密钥暴露或绕过测试的建议。\n");
@@ -37,7 +38,7 @@ public class PromptBuilder {
             prompt.append("字段 change_plan、target_files、test_plan、risk_notes、validation_steps 和 ");
             prompt.append("forbidden_actions 必须始终是 JSON 字符串数组，即使只有一个元素也不能返回裸字符串。\n");
             prompt.append("forbidden_actions 必须精确包含以下确认项：");
-            prompt.append("[\"no production release\", \"no auto merge\", \"no production config edit\"].\n");
+            prompt.append("[\"禁止生产发布\", \"禁止自动合并\", \"禁止修改生产配置\"].\n");
             prompt.append("优先使用结构化补丁格式，不要首选直接手写原始 diff：\n");
             prompt.append("- file_edits 是数组，每个元素格式为 {\"path\":\"...\",\"old_text\":\"文件中精确存在的原文\",");
             prompt.append("\"new_text\":\"替换后的文本\"}。\n");
@@ -72,6 +73,7 @@ public class PromptBuilder {
         try {
             StringBuilder prompt = new StringBuilder();
             prompt.append("你正在修复一个由受控 DevOps 智能体生成的非法补丁。\n");
+            appendChineseOutputRules(prompt);
             prompt.append("不要改变根因结论、目标文件、策略确认项或业务修复意图；只修复补丁格式和上下文匹配问题。\n");
             prompt.append("上一次 unified_diff 执行 git apply --check 失败，错误如下：\n");
             prompt.append(applyError == null ? "未知 git apply 错误" : applyError).append("\n\n");
@@ -110,5 +112,13 @@ public class PromptBuilder {
         prompt.append("- 新增文件时必须包含 new file mode 100644、--- /dev/null 和 +++ b/path。\n");
         prompt.append("- @@ -a,b +c,d @@ 这类 hunk 头中的行数必须与后续 hunk 内容严格一致。\n");
         prompt.append("- 不要使用 Markdown 代码块包裹 diff，不要省略 diff --git 头。\n");
+    }
+
+    private void appendChineseOutputRules(StringBuilder prompt) {
+        prompt.append("所有思考过程和非代码输出必须使用简体中文，包括 reasoning、根因分析、变更计划、");
+        prompt.append("测试计划、风险说明、验证步骤和禁止操作说明。\n");
+        prompt.append("源码、代码注释、JSON 字段名、文件路径、类名、方法名、变量名、命令、日志原文、");
+        prompt.append("错误原文、file_edits、new_files 和 unified_diff 中必须精确匹配的内容保持原样，不要翻译。\n");
+        prompt.append("除上述必须保持原样的技术内容外，不得使用英文撰写解释性或提示性内容。\n");
     }
 }

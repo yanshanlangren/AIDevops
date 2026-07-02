@@ -2,6 +2,8 @@ package com.example.aidevops.llm;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 
@@ -59,6 +61,24 @@ class ChatAbcSseParserTest {
                 + "data:invalid-json-that-must-not-be-read\n\n";
 
         assertEquals("complete", parser.parse(input(stream), "FAIAG0000"));
+    }
+
+    @Test
+    void ignoresReasoningWhenBuildingModelContent() throws Exception {
+        String stream = "event:chunk\n"
+                + "data:{\"content\":\"result\",\"additional_kwargs\":{\"reasoning\":\"first\\n\"}}\n\n"
+                + "event:chunk\n"
+                + "data:{\"content\":\" content\",\"additional_kwargs\":{\"reasoning\":\"second\"}}\n\n"
+                + "event:done\n"
+                + "data:{\"status\":\"success\",\"rescode\":\"FAIAG0000\"}\n\n";
+
+        ByteArrayOutputStream chunkOutput = new ByteArrayOutputStream();
+        ChatAbcSseParser streamingParser = new ChatAbcSseParser(
+                new ObjectMapper(), true, "session-test", new PrintStream(chunkOutput, true, "UTF-8"));
+
+        assertEquals("result content", streamingParser.parse(input(stream), "FAIAG0000"));
+        assertEquals("first second" + System.lineSeparator(),
+                new String(chunkOutput.toByteArray(), StandardCharsets.UTF_8));
     }
 
     private ByteArrayInputStream input(String value) {

@@ -57,7 +57,7 @@ public class RepoManager {
                 incident.getIncidentId(), taskId, directory);
 
         RepoWorkspace workspace = new RepoWorkspace(directory, repo.getGitCommand());
-        String branch = branchName(incident);
+        String branch = branchName(incident, taskId);
         runGit(directory, GitAuthentication.NONE, Arrays.asList("checkout", "-b", branch));
         workspace.setBranch(branch);
         log.info("Working branch created: incidentId={}, taskId={}, branch={}",
@@ -164,12 +164,17 @@ public class RepoManager {
         }
     }
 
-    private String branchName(IncidentContext incident) {
+    private String branchName(IncidentContext incident, String taskId) {
         String fingerprint = safe(incident.getErrorFingerprint());
         if (fingerprint.length() > 40) {
             fingerprint = fingerprint.substring(0, 40);
         }
-        return repo.getWorkingBranchPrefix() + "/" + safe(incident.getIncidentId()) + "/" + fingerprint;
+        String taskSuffix = safe(taskId);
+        if (taskSuffix.length() > 8) {
+            taskSuffix = taskSuffix.substring(0, 8);
+        }
+        return repo.getWorkingBranchPrefix() + "/" + safe(incident.getIncidentId()) + "/"
+                + fingerprint + "-" + taskSuffix;
     }
 
     private String safe(String value) {

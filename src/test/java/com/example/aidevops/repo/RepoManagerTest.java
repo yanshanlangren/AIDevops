@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RepoManagerTest {
@@ -48,9 +49,14 @@ class RepoManagerTest {
         String commitId = manager.commit(workspace, incident, Arrays.asList("README.md"));
 
         assertTrue(commitId.matches("[0-9a-f]{40}"));
-        assertEquals("ai-devops/INC-TEST-1/rowkey-error", workspace.getBranch());
+        assertEquals("ai-devops/INC-TEST-1/rowkey-error-task-1", workspace.getBranch());
         assertEquals(workspace.getBranch(),
                 runGit(workspace.getDirectory(), "branch", "--show-current").trim());
+
+        RepoWorkspace secondWorkspace = manager.prepare(
+                incident, "ea1ec860-6bb2-4642-9a1a-4893551b5f57");
+        assertEquals("ai-devops/INC-TEST-1/rowkey-error-ea1ec860", secondWorkspace.getBranch());
+        assertNotEquals(workspace.getBranch(), secondWorkspace.getBranch());
     }
 
     private Path createRemoteRepository(Path directory) throws Exception {

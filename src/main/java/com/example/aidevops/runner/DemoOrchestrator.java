@@ -399,13 +399,14 @@ public class DemoOrchestrator {
     private List<String> validateModelGuard(LlmPlan plan) {
         List<String> blocked = new ArrayList<String>();
         List<String> confirmations = plan.getForbiddenActions();
-        requireConfirmation(confirmations, "no production release", blocked);
-        requireConfirmation(confirmations, "no auto merge", blocked);
-        requireConfirmation(confirmations, "no production config edit", blocked);
+        requireConfirmation(confirmations, "禁止生产发布", blocked, "no production release");
+        requireConfirmation(confirmations, "禁止自动合并", blocked, "no auto merge");
+        requireConfirmation(confirmations, "禁止修改生产配置", blocked, "no production config edit");
         return blocked;
     }
 
-    private void requireConfirmation(List<String> confirmations, String required, List<String> blocked) {
+    private void requireConfirmation(List<String> confirmations, String required,
+                                     List<String> blocked, String... aliases) {
         if (confirmations == null) {
             blocked.add("model did not confirm forbidden action: " + required);
             return;
@@ -413,6 +414,11 @@ public class DemoOrchestrator {
         for (String confirmation : confirmations) {
             if (required.equalsIgnoreCase(confirmation)) {
                 return;
+            }
+            for (String alias : aliases) {
+                if (alias.equalsIgnoreCase(confirmation)) {
+                    return;
+                }
             }
         }
         blocked.add("model did not confirm forbidden action: " + required);

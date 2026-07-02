@@ -141,6 +141,7 @@ public class ModelProperties {
         private boolean stream = true;
         private boolean requireApiKey = false;
         private String successCode = "FAIAG0000";
+        private boolean logResponses = true;
 
         public String getInitSessionPath() {
             return initSessionPath;
@@ -212,6 +213,14 @@ public class ModelProperties {
 
         public void setSuccessCode(String successCode) {
             this.successCode = successCode;
+        }
+
+        public boolean isLogResponses() {
+            return logResponses;
+        }
+
+        public void setLogResponses(boolean logResponses) {
+            this.logResponses = logResponses;
         }
     }
 }

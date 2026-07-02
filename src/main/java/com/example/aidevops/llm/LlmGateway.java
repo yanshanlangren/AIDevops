@@ -132,9 +132,13 @@ public class LlmGateway {
                                             ModelProperties.ChatAbc chatabc) {
         Map<String, Object> request = baseChatAbcRequest(chatabc);
         request.put("data", Collections.emptyMap());
+        logChatAbcRequest("init_session", url, request, chatabc);
         ResponseEntity<JsonNode> response = rest.exchange(url, HttpMethod.POST,
                 new HttpEntity<Map<String, Object>>(request, chatAbcHeaders(key, false)), JsonNode.class);
         JsonNode root = response.getBody();
+        if (chatabc.isLogResponses()) {
+            log.info("ChatABC init_session response: status={}, body={}", response.getStatusCodeValue(), root);
+        }
         if (root == null) {
             throw new IllegalStateException("ChatABC init_session returned an empty response");
         }
@@ -160,10 +164,14 @@ public class LlmGateway {
         chatData.put("files", Collections.emptyList());
         chatData.put("stream", chatabc.isStream());
         request.put("data", chatData);
+        logChatAbcRequest("chat", url, request, chatabc);
 
         if (!chatabc.isStream()) {
             ResponseEntity<JsonNode> response = rest.exchange(url, HttpMethod.POST,
                     new HttpEntity<Map<String, Object>>(request, chatAbcHeaders(key, false)), JsonNode.class);
+            if (chatabc.isLogResponses()) {
+                log.info("ChatABC chat response: status={}, body={}", response.getStatusCodeValue(), response.getBody());
+            }
             return extractChatAbcJsonContent(response.getBody(), chatabc.getSuccessCode());
         }
 
@@ -173,7 +181,11 @@ public class LlmGateway {
             mapper.writeValue(httpRequest.getBody(), request);
         }, response -> {
             try {
-                return new ChatAbcSseParser(mapper).parse(response.getBody(), chatabc.getSuccessCode());
+                if (chatabc.isLogResponses()) {
+                    log.info("ChatABC chat stream response opened: status={}", response.getRawStatusCode());
+                }
+                return new ChatAbcSseParser(mapper, chatabc.isLogResponses(), sessionId)
+                        .parse(response.getBody(), chatabc.getSuccessCode());
             } catch (IOException e) {
                 throw new IllegalStateException("Failed to read ChatABC stream", e);
             }
@@ -189,6 +201,20 @@ public class LlmGateway {
         request.put("agent_id", chatabc.getAgentId());
         request.put("requestId", UUID.randomUUID().toString());
         return request;
+    }
+
+    private void logChatAbcRequest(String operation, String url, Map<String, Object> request,
+                                   ModelProperties.ChatAbc chatabc) {
+        if (!chatabc.isLogResponses()) {
+            return;
+        }
+        try {
+            log.info("ChatABC request: operation={}, endpoint={}, body={}",
+                    operation, url, mapper.writeValueAsString(request));
+        } catch (JsonProcessingException e) {
+            log.warn("Failed to serialize ChatABC request for logging: operation={}, endpoint={}",
+                    operation, url, e);
+        }
     }
 
     private String extractChatAbcJsonContent(JsonNode root, String successCode) {
